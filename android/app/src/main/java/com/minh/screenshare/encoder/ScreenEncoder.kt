@@ -186,13 +186,13 @@ class ScreenEncoder(
                         if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
                             if (PacketWriter.isValidSpsPps(bufferData)) {
                                 Log.i(TAG, "Nhận BUFFER_FLAG_CODEC_CONFIG hợp lệ (${bufferData.size} bytes). Lưu lại SPS/PPS.")
-                                cachedSpsPps = bufferData
-                                // Gửi ngay gói cấu hình đầu tiên cho máy tính
-                                val configPacket = PacketWriter.createConfigPacket(width, height, bufferData)
-                                streamClient.enqueuePacket(configPacket, PacketWriter.TYPE_CONFIG)
                             } else {
-                                Log.w(TAG, "CẢNH BÁO: BUFFER_FLAG_CODEC_CONFIG không đúng định dạng SPS/PPS (cần bắt đầu 00 00 00 01 67 và chứa 00 00 00 01 68). Bỏ qua.")
+                                Log.w(TAG, "CẢNH BÁO: BUFFER_FLAG_CODEC_CONFIG không vượt qua kiểm tra SPS/PPS chuẩn (${bufferData.size} bytes). Vẫn lưu và gửi gói cấu hình.")
                             }
+                            cachedSpsPps = bufferData
+                            // Gửi ngay gói cấu hình đầu tiên cho máy tính
+                            val configPacket = PacketWriter.createConfigPacket(width, height, bufferData)
+                            streamClient.enqueuePacket(configPacket, PacketWriter.TYPE_CONFIG)
                         }
                         // 2. Buffer là Keyframe (I-frame):
                         else if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) {
@@ -242,7 +242,7 @@ class ScreenEncoder(
                             val configPacket = PacketWriter.createConfigPacket(width, height, combined)
                             streamClient.enqueuePacket(configPacket, PacketWriter.TYPE_CONFIG)
                         } else {
-                            Log.w(TAG, "CẢNH BÁO: Dữ liệu csd-0/csd-1 không phải SPS/PPS hợp lệ (cần bắt đầu 00 00 00 01 67 và chứa 00 00 00 01 68). Bỏ qua.")
+                            Log.w(TAG, "CẢNH BÁO: Dữ liệu csd-0/csd-1 không phải SPS/PPS hợp lệ (cần NAL SPS type 7 và PPS type 8). Bỏ qua.")
                         }
                     }
                 }
@@ -305,6 +305,9 @@ class ScreenEncoder(
             inputSurface?.release()
         } catch (_: Exception) {}
         inputSurface = null
+
+        // Đặt lại cachedSpsPps = null trước khi khởi tạo lại encoder, để không gửi SPS/PPS của độ phân giải cũ kèm kích thước mới
+        cachedSpsPps = null
 
         // Khởi tạo codec và Surface mới với kích thước mới (this.width, this.height có thể được làm tròn)
         initCodecAndSurface()

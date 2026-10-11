@@ -21,9 +21,8 @@ object PacketWriter {
     const val TYPE_KEYFRAME: Byte = 1
     const val TYPE_DELTA: Byte = 2
 
-    // Tiền tố NAL unit chuẩn H.264 Annex-B (4-byte start code + NAL header)
-    private val SPS_START_CODE = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x67)
-    private val PPS_START_CODE = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x68)
+    const val NAL_TYPE_SPS = 7
+    const val NAL_TYPE_PPS = 8
 
     /**
      * Tạo mảng byte cho gói Cấu hình (Loại 0).
@@ -97,20 +96,47 @@ object PacketWriter {
     }
 
     /**
+     * Tìm vị trí header NAL unit có loại mong muốn (targetType: 7 cho SPS, 8 cho PPS).
+     * Hỗ trợ cả start code 4 byte (00 00 00 01) và 3 byte (00 00 01).
+     * Loại NAL được xác định bằng: (nalHeaderByte.toInt() and 0x1F).
+     * @return Vị trí index của byte NAL header nếu tìm thấy, hoặc -1 nếu không có.
+     */
+    fun findNalUnitType(data: ByteArray, targetType: Int, startIndex: Int = 0): Int {
+        for (i in startIndex..data.size - 4) {
+            if (data[i] == 0.toByte() && data[i + 1] == 0.toByte()) {
+                // Kiểm tra start code 4 byte: 00 00 00 01 [NAL_HEADER]
+                if (i + 4 < data.size && data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()) {
+                    val nalType = data[i + 4].toInt() and 0x1F
+                    if (nalType == targetType) return i + 4
+                }
+                // Kiểm tra start code 3 byte: 00 00 01 [NAL_HEADER]
+                else if (data[i + 2] == 1.toByte()) {
+                    val nalType = data[i + 3].toInt() and 0x1F
+                    if (nalType == targetType) return i + 3
+                }
+            }
+        }
+        return -1
+    }
+
+    /**
      * Kiểm tra tính hợp lệ của mảng byte SPS/PPS:
-     * - Bắt buộc bắt đầu bằng start code 00 00 00 01 67 (SPS)
-     * - Bắt buộc chứa start code 00 00 00 01 68 (PPS)
+     * - Chấp nhận start code 3 byte (00 00 01) hoặc 4 byte (00 00 00 01).
+     * - Bắt đầu bằng NAL SPS (loại 7).
+     * - Phía sau có chứa NAL PPS (loại 8).
+     * - Kiểm tra loại NAL bằng (byte and 0x1F): SPS = 7, PPS = 8 (không so sánh cứng 0x67 / 0x68).
      */
     fun isValidSpsPps(data: ByteArray): Boolean {
-        if (data.size < 10) return false
-
-        // Kiểm tra bắt đầu bằng 00 00 00 01 67
-        for (i in SPS_START_CODE.indices) {
-            if (data[i] != SPS_START_CODE[i]) return false
+        val spsHeaderIndex = when {
+            data.size >= 5 && data[0] == 0.toByte() && data[1] == 0.toByte() && data[2] == 0.toByte() && data[3] == 1.toByte() -> 4
+            data.size >= 4 && data[0] == 0.toByte() && data[1] == 0.toByte() && data[2] == 1.toByte() -> 3
+            else -> return false
         }
 
-        // Kiểm tra chứa 00 00 00 01 68 ở phía sau
-        return indexOfSequence(data, PPS_START_CODE, startIndex = SPS_START_CODE.size) != -1
+        val spsType = data[spsHeaderIndex].toInt() and 0x1F
+        if (spsType != NAL_TYPE_SPS) return false
+
+        return findNalUnitType(data, NAL_TYPE_PPS, startIndex = spsHeaderIndex + 1) != -1
     }
 
     /**

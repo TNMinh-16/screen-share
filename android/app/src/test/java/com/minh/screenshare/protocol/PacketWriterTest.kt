@@ -148,19 +148,85 @@ class PacketWriterTest {
     }
 
     @Test
+    fun testCombineCsdBuffersThreeByteAndFourByteStartCodes() {
+        // csd-0 (SPS) dùng start code 3 byte (00 00 01) và NAL header 0x27 (nal_ref_idc=1, type=7)
+        val sps3Bytes = byteArrayOf(0x00, 0x00, 0x01, 0x27, 0x42, 0x00, 0x1E)
+        // csd-1 (PPS) dùng start code 4 byte (00 00 00 01) và NAL header 0x28 (nal_ref_idc=1, type=8)
+        val pps4Bytes = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x28, 0xCE.toByte(), 0x3C)
+
+        val combined = PacketWriter.combineCsdBuffers(ByteBuffer.wrap(sps3Bytes), ByteBuffer.wrap(pps4Bytes))
+        assertNotNull(combined)
+        assertArrayEquals(sps3Bytes + pps4Bytes, combined)
+        assertTrue(PacketWriter.isValidSpsPps(combined!!))
+
+        // Ngược lại: csd-0 4 byte và csd-1 3 byte
+        val sps4Bytes = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x47, 0x42, 0x00)
+        val pps3Bytes = byteArrayOf(0x00, 0x00, 0x01, 0x48, 0xCE.toByte(), 0x3C)
+        val combined2 = PacketWriter.combineCsdBuffers(ByteBuffer.wrap(sps4Bytes), ByteBuffer.wrap(pps3Bytes))
+        assertNotNull(combined2)
+        assertTrue(PacketWriter.isValidSpsPps(combined2!!))
+    }
+
+    @Test
+    fun testIsValidSpsPpsVariousNalHeadersAndStartCodes() {
+        // 1. Cả 2 đều dùng start code 3 byte: 00 00 01 [SPS=0x67] + 00 00 01 [PPS=0x68]
+        val both3Byte = byteArrayOf(0x00, 0x00, 0x01, 0x67, 0x11, 0x22, 0x00, 0x00, 0x01, 0x68, 0x33)
+        assertTrue(PacketWriter.isValidSpsPps(both3Byte))
+
+        // 2. Cả 2 đều dùng start code 4 byte: 00 00 00 01 [SPS=0x67] + 00 00 00 01 [PPS=0x68]
+        val both4Byte = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x67, 0x11, 0x00, 0x00, 0x00, 0x01, 0x68, 0x22)
+        assertTrue(PacketWriter.isValidSpsPps(both4Byte))
+
+        // 3. Các giá trị NAL header khác nhau nhưng cùng NAL type:
+        // SPS type 7: 0x07 (ref_idc=0), 0x27 (ref_idc=1), 0x47 (ref_idc=2), 0x67 (ref_idc=3)
+        // PPS type 8: 0x08 (ref_idc=0), 0x28 (ref_idc=1), 0x48 (ref_idc=2), 0x68 (ref_idc=3)
+        val refIdcCases = listOf(
+            Pair(0x07.toByte(), 0x08.toByte()),
+            Pair(0x27.toByte(), 0x28.toByte()),
+            Pair(0x47.toByte(), 0x48.toByte()),
+            Pair(0x67.toByte(), 0x68.toByte())
+        )
+        for ((spsHeader, ppsHeader) in refIdcCases) {
+            val data4Byte = byteArrayOf(
+                0x00, 0x00, 0x00, 0x01, spsHeader, 0x11,
+                0x00, 0x00, 0x00, 0x01, ppsHeader, 0x22
+            )
+            assertTrue("Thử nghiệm với SPS header=0x${Integer.toHexString(spsHeader.toInt())}, PPS header=0x${Integer.toHexString(ppsHeader.toInt())}",
+                PacketWriter.isValidSpsPps(data4Byte))
+
+            val data3Byte = byteArrayOf(
+                0x00, 0x00, 0x01, spsHeader, 0x11,
+                0x00, 0x00, 0x01, ppsHeader, 0x22
+            )
+            assertTrue(PacketWriter.isValidSpsPps(data3Byte))
+        }
+    }
+
+    @Test
     fun testCombineCsdBuffersInvalidData() {
         // Thiếu csd0 hoặc csd1
         assertNull(PacketWriter.combineCsdBuffers(null, ByteBuffer.wrap(byteArrayOf(1, 2))))
         assertNull(PacketWriter.combineCsdBuffers(ByteBuffer.wrap(byteArrayOf(1, 2)), null))
 
-        // csd0 không bắt đầu bằng 00 00 00 01 67
-        val invalidSps = byteArrayOf(0x00, 0x00, 0x01, 0x65, 0x11) // Không phải SPS
+        // csd0 không phải SPS (0x65 = IDR slice, type 5)
+        val invalidSps = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65, 0x11)
         val validPps = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x68, 0x22)
         assertNull(PacketWriter.combineCsdBuffers(ByteBuffer.wrap(invalidSps), ByteBuffer.wrap(validPps)))
 
-        // Thiếu PPS 00 00 00 01 68
+        // Thiếu PPS (chỉ có IDR slice 0x65 ở buffer 2)
         val validSps = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00)
-        val invalidPps = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65, 0x22) // IDR slice, không phải PPS
+        val invalidPps = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65, 0x22)
         assertNull(PacketWriter.combineCsdBuffers(ByteBuffer.wrap(validSps), ByteBuffer.wrap(invalidPps)))
+
+        // Bắt đầu bằng PPS trước SPS
+        val ppsFirst = byteArrayOf(
+            0x00, 0x00, 0x00, 0x01, 0x68, 0x11,
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x22
+        )
+        assertFalse(PacketWriter.isValidSpsPps(ppsFirst))
+
+        // Dữ liệu ngẫu nhiên hoặc quá ngắn
+        assertFalse(PacketWriter.isValidSpsPps(byteArrayOf(0, 0, 1)))
+        assertFalse(PacketWriter.isValidSpsPps(byteArrayOf(1, 2, 3, 4, 5, 6)))
     }
 }
