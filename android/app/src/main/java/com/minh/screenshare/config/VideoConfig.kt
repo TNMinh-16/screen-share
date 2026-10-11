@@ -11,10 +11,10 @@ object VideoConfig {
     const val MAX_LONG_EDGE = 1280
 
     // Tốc độ khung hình (FPS)
-    const val FRAME_RATE = 30
+    const val FRAME_RATE = 60
 
-    // Bitrate mục tiêu: 5 Mbps (5,000,000 bps)
-    const val BIT_RATE = 5_000_000
+    // Bitrate mục tiêu: 8 Mbps (8,000,000 bps) cho 60 FPS mượt mà
+    const val BIT_RATE = 8_000_000
 
     // Chu kỳ khung hình chính (I-frame): 1 giây
     const val I_FRAME_INTERVAL_SECONDS = 1

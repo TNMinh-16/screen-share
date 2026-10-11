@@ -16,8 +16,8 @@ import av
 
 logger = logging.getLogger("Decoder")
 
-# Ngưỡng số lượng gói dồn trong hàng đợi mạng trước khi kích hoạt nhảy đến Keyframe tiếp theo
-LAG_PACKET_THRESHOLD = 25
+# Ngưỡng số lượng gói dồn trong hàng đợi mạng trước khi kích hoạt nhảy đến Keyframe tiếp theo (50 gói phù hợp với 60 FPS)
+LAG_PACKET_THRESHOLD = 50
 
 
 class H264Decoder(threading.Thread):

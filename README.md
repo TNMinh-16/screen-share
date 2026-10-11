@@ -46,8 +46,26 @@ Mỗi gói tin truyền qua TCP socket có cấu trúc nhị phân (Big-Endian):
 ## 3. Quy tắc giải mã và triệt tiêu độ trễ phía PC (Windows)
 
 1. **Không drop gói H.264 tùy tiện:** Luôn giải mã đầy đủ mọi frame hợp lệ để duy trì chuỗi tham chiếu. Chỉ bỏ qua việc vẽ các khung cũ trên UI, luôn vẽ khung mới nhất.
-2. **Xử lý khi giật lag nặng:** Nếu hàng đợi mạng dồn quá ngưỡng (> 25 gói do mạng chập chờn hoặc máy bận), decoder chuyển sang trạng thái bỏ qua các khung thường (P-frame) và nhảy thẳng đến Keyframe tiếp theo để khôi phục ngay độ trễ thấp nhất mà không bị vỡ hình.
+2. **Xử lý khi giật lag nặng:** Nếu hàng đợi mạng dồn quá ngưỡng (> 50 gói ở 60 FPS do mạng chập chờn hoặc máy bận), decoder chuyển sang trạng thái bỏ qua các khung thường (P-frame) và nhảy thẳng đến Keyframe tiếp theo để khôi phục ngay độ trễ thấp nhất mà không bị vỡ hình.
 3. **Đồng bộ bắt đầu:** Bộ giải mã chỉ xuất hình sau khi nhận đủ gói cấu hình (Type 0) và Keyframe đầu tiên (Type 1).
+
+### Cấu hình hiệu năng Video (60 FPS vs 30 FPS)
+
+- **Thông số mặc định hiện tại (60 FPS siêu mượt):**
+  - **Tốc độ khung hình (FRAME_RATE):** `60 FPS` (file `VideoConfig.kt`)
+  - **Bitrate (BIT_RATE):** `8 Mbps` (`8_000_000 bps`, file `VideoConfig.kt`)
+  - **H.264 Level:** `AVCLevel4` (file `ScreenEncoder.kt`, hỗ trợ 720p tại 60 FPS)
+  - **Ngưỡng chống lag (LAG_PACKET_THRESHOLD):** `50 gói` (file `pc/decoder.py`)
+
+- **Cách quay lại chế độ 30 FPS (nếu điện thoại nóng máy, tốn pin hoặc mạng Wi-Fi yếu):**
+  1. Mở file `android/app/src/main/java/com/minh/screenshare/config/VideoConfig.kt`:
+     - Đổi `FRAME_RATE = 30`
+     - Đổi `BIT_RATE = 5_000_000` (5 Mbps)
+  2. Mở file `android/app/src/main/java/com/minh/screenshare/encoder/ScreenEncoder.kt`:
+     - Đổi `AVCLevel4` thành `MediaCodecInfo.CodecProfileLevel.AVCLevel31`
+  3. Mở file `pc/decoder.py`:
+     - Đổi `LAG_PACKET_THRESHOLD = 25`
+  4. Build lại APK debug bằng lệnh: `.\gradlew.bat assembleDebug`
 
 ---
 
@@ -142,7 +160,7 @@ Khi chạy thử hệ thống hoàn chỉnh:
 - [ ] **Ghi nhận IP:** Xem địa chỉ IP máy tính và Cổng `8554` trên cửa sổ Windows.
 - [ ] **Mở app Android:** Nhập đúng địa chỉ IP trên vào ô IP, bấm nút **Bắt đầu truyền màn hình**.
 - [ ] **Cấp quyền:** Hệ thống Android hiển thị hộp thoại *"Screen Share sẽ bắt đầu ghi lại mọi thứ trên màn hình của bạn"*, bấm **Bắt đầu ngay** (Start now).
-- [ ] **Quan sát:** Cửa sổ Windows lập tức hiện màn hình điện thoại mượt mà, FPS đạt ~30 FPS, độ trễ thấp.
+- [ ] **Quan sát:** Cửa sổ Windows lập tức hiện màn hình điện thoại mượt mà, FPS đạt ~60 FPS (hoặc ~30 FPS nếu cấu hình ở chế độ 30 FPS), độ trễ thấp.
 - [ ] **Thử xoay màn hình:** Xoay điện thoại từ dọc sang ngang (Landscape), kiểm tra cửa sổ Windows có tự động co giãn và giữ đúng tỉ lệ không.
 - [ ] **Thử dừng và kết nối lại:** Bấm **Dừng** trên app Android (hoặc bấm Dừng trên thanh thông báo Notification), sau đó bấm **Bắt đầu** lại để kiểm tra khả năng tái kết nối.
 - [ ] **Thử ngắt kết nối đột ngột:** Tắt cửa sổ Windows trong lúc điện thoại đang truyền -> kiểm tra app Android có dọn dẹp tài nguyên và báo lỗi rõ ràng hay không.

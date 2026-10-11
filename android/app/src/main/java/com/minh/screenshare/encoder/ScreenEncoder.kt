@@ -128,7 +128,8 @@ class ScreenEncoder(
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
             // Profile Baseline: Tương thích cao, không có B-frame
             setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
-            setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+            // Level 4.0: Hỗ trợ độ phân giải 720p tại 60 FPS (Level 3.1 chỉ hỗ trợ tối đa 30 FPS ở 720p)
+            setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel4)
 
             // Độ trễ thời gian thực (KEY_PRIORITY = 0)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
