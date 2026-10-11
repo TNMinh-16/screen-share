@@ -85,20 +85,6 @@ python mock_sender.py
 
 ---
 
-## 5. Lưu ý quan trọng cho môi trường mạng & thiết bị
-
-1. **Tường lửa Windows (Windows Firewall):**
-   - Khi chạy `python main.py` lần đầu, Windows có thể hiện popup hỏi quyền truy cập mạng. Hãy tích chọn **Private networks** và bấm **Allow access**.
-   - Hoặc mở cổng 8554 thủ công trong Windows Defender Firewall.
-2. **Tính năng cách ly mạng Wi-Fi (AP Isolation):**
-   - Một số modem Wi-Fi bật tính năng *AP Isolation* (cách ly các thiết bị kết nối vào Wi-Fi không nhìn thấy nhau). Hãy kiểm tra router và tắt tính năng này nếu điện thoại không kết nối được tới IP máy tính.
-3. **Cài đặt tiết kiệm pin trên Oppo (ColorOS):**
-   - Điện thoại Oppo thường tự đóng ứng dụng chạy nền sau vài phút. Vào *Cài đặt* -> *Pin* -> *Quản lý pin cho ứng dụng* -> chọn App Screen Share -> bật *Cho phép hoạt động dưới nền* và *Tắt tối ưu hóa pin*.
-4. **Màn hình bảo mật:**
-   - Khi mở app ngân hàng hoặc màn hình nhập mật khẩu, Android sẽ tự động xuất khung đen để bảo vệ dữ liệu người dùng. Đây là chính sách an ninh của hệ điều hành.
-
----
-
 ## 5. Hướng dẫn chạy và Kiểm thử Bước 2 (Ứng dụng Android)
 
 ### Bước 2.1: Mở dự án trong Android Studio
@@ -135,7 +121,21 @@ C:\Users\lenovo\AppData\Local\Android\Sdk\platform-tools\adb.exe install -r app\
 
 ---
 
-## 6. Danh sách kiểm tra khi chạy thử (Checklist)
+## 6. Lưu ý quan trọng cho môi trường mạng & thiết bị
+
+1. **Tường lửa Windows (Windows Firewall):**
+   - Khi chạy `python main.py` lần đầu, Windows có thể hiện popup hỏi quyền truy cập mạng. Hãy tích chọn **Private networks** và bấm **Allow access**.
+   - Hoặc mở cổng 8554 thủ công trong Windows Defender Firewall.
+2. **Tính năng cách ly mạng Wi-Fi (AP Isolation):**
+   - Một số modem Wi-Fi bật tính năng *AP Isolation* (cách ly các thiết bị kết nối vào Wi-Fi không nhìn thấy nhau). Hãy kiểm tra router và tắt tính năng này nếu điện thoại không kết nối được tới IP máy tính.
+3. **Cài đặt tiết kiệm pin trên Oppo (ColorOS):**
+   - Điện thoại Oppo thường tự đóng ứng dụng chạy nền sau vài phút. Vào *Cài đặt* -> *Pin* -> *Quản lý pin cho ứng dụng* -> chọn App Screen Share -> bật *Cho phép hoạt động dưới nền* và *Tắt tối ưu hóa pin*.
+4. **Màn hình bảo mật:**
+   - Khi mở app ngân hàng hoặc màn hình nhập mật khẩu, Android sẽ tự động xuất khung đen để bảo vệ dữ liệu người dùng. Đây là chính sách an ninh của hệ điều hành.
+
+---
+
+## 7. Danh sách kiểm tra khi chạy thử (Checklist)
 
 Khi chạy thử hệ thống hoàn chỉnh:
 - [ ] **Mở máy tính:** Chạy `python pc/main.py`. Đảm bảo máy tính và điện thoại kết nối **cùng một mạng Wi-Fi**.
@@ -150,7 +150,7 @@ Khi chạy thử hệ thống hoàn chỉnh:
 
 ---
 
-## 7. Hướng dẫn đo độ trễ (Latency Test)
+## 8. Hướng dẫn đo độ trễ (Latency Test)
 
 1. Mở một trang web đồng hồ bấm giờ trực tuyến (ví dụ [stopwatch.onlineclock.net](https://stopwatch.onlineclock.net) hoặc đồng hồ mili-giây) trên màn hình máy tính hoặc điện thoại.
 2. Để điện thoại quay vào màn hình máy tính hoặc hiển thị đồng hồ trên điện thoại.

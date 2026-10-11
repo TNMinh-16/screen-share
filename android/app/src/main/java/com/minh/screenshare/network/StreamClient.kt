@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicLong
  * - Sử dụng hàng đợi có giới hạn dung lượng để kiểm soát độ trễ.
  * - Khi hàng đợi đầy (nghẽn mạng): xóa sạch hàng đợi, bỏ qua các khung thường
  *   cho đến khi có Keyframe mới, và yêu cầu MediaCodec sinh Keyframe ngay.
+ * - Khi nhận Keyframe mà hàng đợi đầy: giữ lại gói cấu hình (Loại 0) đi ngay trước Keyframe đó.
  */
 class StreamClient(
     private val host: String,
@@ -42,6 +43,10 @@ class StreamClient(
     // Cờ báo hiệu đang đợi Keyframe sau khi bị drop gói do đầy queue
     @Volatile
     private var waitingForKeyframe = false
+
+    // Lưu lại gói cấu hình gần nhất để luôn có thể ghép trước Keyframe khi hàng đợi bị xóa
+    @Volatile
+    private var lastConfigPacket: ByteArray? = null
 
     // Thống kê cho việc ghi log định kỳ
     val totalBytesSent = AtomicLong(0L)
@@ -109,28 +114,40 @@ class StreamClient(
     fun enqueuePacket(packet: ByteArray, packetType: Byte) {
         if (!isRunning.get()) return
 
-        // 1. Nếu là gói Cấu hình (Loại 0) hoặc Keyframe (Loại 1):
+        // 1. Gói Cấu hình (Loại 0):
         if (packetType == PacketWriter.TYPE_CONFIG) {
-            // Gói cấu hình luôn được ưu tiên gửi
-            packetQueue.offer(packet)
-            return
-        }
-
-        if (packetType == PacketWriter.TYPE_KEYFRAME) {
-            // Đã có Keyframe mới -> tắt trạng thái chờ
-            if (waitingForKeyframe) {
-                Log.i(TAG, "Đã nhận được Keyframe sau khi nghẽn mạng. Phục hồi truyền bình thường.")
-                waitingForKeyframe = false
-            }
-            // Thử đưa vào queue, nếu vẫn đầy thì dọn để nhường chỗ cho Keyframe cực kỳ quan trọng này
+            lastConfigPacket = packet
+            // Ưu tiên nạp gói cấu hình; nếu queue đầy thì lấy bớt gói cũ ra để nhường chỗ
             if (!packetQueue.offer(packet)) {
-                packetQueue.clear()
+                packetQueue.poll()
                 packetQueue.offer(packet)
             }
             return
         }
 
-        // 2. Nếu là Khung hình thường (Loại 2):
+        // 2. Gói Keyframe (Loại 1):
+        if (packetType == PacketWriter.TYPE_KEYFRAME) {
+            if (waitingForKeyframe) {
+                Log.i(TAG, "Đã nhận được Keyframe sau khi nghẽn mạng. Phục hồi truyền bình thường.")
+                waitingForKeyframe = false
+            }
+
+            // Thử đưa vào queue, nếu đầy:
+            // XÓA HẾT NHƯNG PHẢI GIỮ LẠI GÓI CẤU HÌNH (LOẠI 0) ĐI NGAY TRƯỚC KEYFRAME!
+            if (!packetQueue.offer(packet)) {
+                Log.w(TAG, "Queue đầy khi nhận Keyframe. Xóa queue và xếp lại [Config] -> [Keyframe].")
+                packetQueue.clear()
+                // Xếp lại gói cấu hình trước nếu có
+                lastConfigPacket?.let { cfg ->
+                    packetQueue.offer(cfg)
+                }
+                // Xếp gói Keyframe ngay sau
+                packetQueue.offer(packet)
+            }
+            return
+        }
+
+        // 3. Khung hình thường (Loại 2):
         // Nếu đang trong trạng thái chờ Keyframe do vừa drop mạng -> bỏ qua khung thường này
         if (waitingForKeyframe) {
             return

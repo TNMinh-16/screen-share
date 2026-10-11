@@ -2,6 +2,10 @@ package com.minh.screenshare.protocol
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
@@ -12,7 +16,8 @@ import java.nio.ByteOrder
  * - Thứ tự byte Big-Endian
  * - 4 byte độ dài payload (không tính 1 byte loại gói)
  * - 1 byte loại gói tin (0: Config, 1: Keyframe, 2: Delta)
- * - Nội dung payload (Width, Height, SPS/PPS, NAL data)
+ * - Ghép csd-0 (SPS) và csd-1 (PPS), kiểm tra tính toàn vẹn và thứ tự
+ * - Kiểm tra tính hợp lệ của mảng byte SPS/PPS
  */
 class PacketWriterTest {
 
@@ -109,5 +114,53 @@ class PacketWriterTest {
         PacketWriter.writeConfigPacket(bos, width, height, spsPps)
 
         assertArrayEquals(arrayPacket, bos.toByteArray())
+    }
+
+    @Test
+    fun testCombineCsdBuffersValidOrderAndContent() {
+        // Giả lập csd-0 (SPS) bắt đầu bằng 00 00 00 01 67
+        val spsBytes = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0.toByte(), 0x1E, 0xD9.toByte())
+        // Giả lập csd-1 (PPS) bắt đầu bằng 00 00 00 01 68
+        val ppsBytes = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x68, 0xCE.toByte(), 0x3C, 0x80.toByte())
+
+        val csd0 = ByteBuffer.wrap(spsBytes)
+        val csd1 = ByteBuffer.wrap(ppsBytes)
+
+        val initialPos0 = csd0.position()
+        val initialPos1 = csd1.position()
+
+        val combined = PacketWriter.combineCsdBuffers(csd0, csd1)
+        assertNotNull(combined)
+
+        // 1. Kiểm tra không làm thay đổi con trỏ đọc (position) của buffer gốc
+        assertEquals(initialPos0, csd0.position())
+        assertEquals(initialPos1, csd1.position())
+
+        // 2. Kiểm tra độ dài ghép đúng bằng tổng độ dài
+        assertEquals(spsBytes.size + ppsBytes.size, combined!!.size)
+
+        // 3. Kiểm tra SPS ở đầu, PPS ở ngay sau
+        val expected = spsBytes + ppsBytes
+        assertArrayEquals(expected, combined)
+
+        // 4. Kiểm tra hàm isValidSpsPps nhận diện hợp lệ
+        assertTrue(PacketWriter.isValidSpsPps(combined))
+    }
+
+    @Test
+    fun testCombineCsdBuffersInvalidData() {
+        // Thiếu csd0 hoặc csd1
+        assertNull(PacketWriter.combineCsdBuffers(null, ByteBuffer.wrap(byteArrayOf(1, 2))))
+        assertNull(PacketWriter.combineCsdBuffers(ByteBuffer.wrap(byteArrayOf(1, 2)), null))
+
+        // csd0 không bắt đầu bằng 00 00 00 01 67
+        val invalidSps = byteArrayOf(0x00, 0x00, 0x01, 0x65, 0x11) // Không phải SPS
+        val validPps = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x68, 0x22)
+        assertNull(PacketWriter.combineCsdBuffers(ByteBuffer.wrap(invalidSps), ByteBuffer.wrap(validPps)))
+
+        // Thiếu PPS 00 00 00 01 68
+        val validSps = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00)
+        val invalidPps = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65, 0x22) // IDR slice, không phải PPS
+        assertNull(PacketWriter.combineCsdBuffers(ByteBuffer.wrap(validSps), ByteBuffer.wrap(invalidPps)))
     }
 }

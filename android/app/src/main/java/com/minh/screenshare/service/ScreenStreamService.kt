@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.Point
 import android.hardware.display.DisplayManager
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -87,6 +86,7 @@ class ScreenStreamService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
+                @Suppress("DEPRECATION")
                 val data = intent.getParcelableExtra<Intent>(EXTRA_DATA)
                 val host = intent.getStringExtra(EXTRA_HOST) ?: "127.0.0.1"
                 val port = intent.getIntExtra(EXTRA_PORT, VideoConfig.DEFAULT_PORT)
@@ -94,7 +94,21 @@ class ScreenStreamService : Service() {
                 if (resultCode != 0 && data != null) {
                     startStreaming(resultCode, data, host, port)
                 } else {
+                    // Gọi startForeground() trước khi stopSelf() để tránh crash trên Android 8 đến 11
+                    createNotificationChannel()
+                    val notification = buildNotification()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        startForeground(
+                            VideoConfig.NOTIFICATION_ID,
+                            notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                        )
+                    } else {
+                        startForeground(VideoConfig.NOTIFICATION_ID, notification)
+                    }
+
                     AppState.updateState(StreamState.Error("Dữ liệu cấp quyền MediaProjection không hợp lệ!"))
+                    stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
             }
@@ -183,7 +197,15 @@ class ScreenStreamService : Service() {
                             width = currentWidth,
                             height = currentHeight,
                             densityDpi = currentDpi,
-                            streamClient = client
+                            streamClient = client,
+                            onError = { error ->
+                                Log.e(TAG, "Lỗi trong ScreenEncoder: ${error.message}")
+                                mainHandler.post {
+                                    AppState.updateState(StreamState.Error("Lỗi bộ mã hóa video: ${error.message}"))
+                                    stopStreaming()
+                                    stopSelf()
+                                }
+                            }
                         )
                         encoder.start()
                         screenEncoder = encoder

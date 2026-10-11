@@ -26,7 +26,8 @@ class ScreenEncoder(
     private var width: Int,
     private var height: Int,
     private var densityDpi: Int,
-    private val streamClient: StreamClient
+    private val streamClient: StreamClient,
+    private val onError: (Throwable) -> Unit
 ) {
     companion object {
         private const val TAG = "ScreenShare"
@@ -77,24 +78,33 @@ class ScreenEncoder(
     }
 
     /**
-     * Khởi tạo MediaCodec với cơ chế Fallback nếu chip không hỗ trợ một số tham số nâng cao.
+     * Khởi tạo MediaCodec với cơ chế Fallback nếu chip không hỗ trợ một số tham số nâng cao:
+     * Khi configure() lần đầu bị lỗi: giải phóng (release) codec cũ và tạo một MediaCodec mới hoàn toàn
+     * cho lần thử cấu hình tối giản, không tái sử dụng đối tượng đã rơi vào trạng thái lỗi.
      */
     private fun initCodecAndSurface() {
-        // Thử lần 1: Bộ tham số tối ưu chuẩn
         val format = createFullFormat(width, height)
-        val newCodec = MediaCodec.createEncoderByType(MIME_TYPE)
+        var newCodec = MediaCodec.createEncoderByType(MIME_TYPE)
 
         try {
             newCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         } catch (e: Exception) {
-            Log.w(TAG, "configure() với format đầy đủ bị lỗi (${e.message}). Thử lại với cấu hình tối giản (Fallback MediaTek)...")
-            // Thử lần 2: Làm tròn kích thước xuống bội số của 16 và dùng format tối giản
+            Log.w(TAG, "configure() với format đầy đủ bị lỗi (${e.message}). Giải phóng codec cũ và thử lại đối tượng mới với cấu hình tối giản (Fallback MediaTek)...")
+
+            // 1. Giải phóng hoàn toàn đối tượng codec cũ đã bị lỗi
+            try {
+                newCodec.release()
+            } catch (_: Exception) {}
+
+            // 2. Làm tròn kích thước xuống bội số của 16
             val safeWidth = (width / 16) * 16
             val safeHeight = (height / 16) * 16
             width = safeWidth
             height = safeHeight
 
+            // 3. Tạo instance MediaCodec mới hoàn toàn
             val fallbackFormat = createMinimalFormat(safeWidth, safeHeight)
+            newCodec = MediaCodec.createEncoderByType(MIME_TYPE)
             newCodec.configure(fallbackFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         }
 
@@ -143,86 +153,104 @@ class ScreenEncoder(
 
     /**
      * Vòng lặp lấy output buffer từ MediaCodec và đóng gói gửi qua StreamClient.
+     * Khi xảy ra lỗi hoặc thoát bất thường, kích hoạt callback onError để service dừng phiên.
      */
     private fun drainLoop() {
         val bufferInfo = MediaCodec.BufferInfo()
 
-        while (isRunning.get()) {
-            val currentCodec = codec ?: break
+        try {
+            while (isRunning.get()) {
+                val currentCodec = codec ?: break
 
-            val outputBufferId = try {
-                currentCodec.dequeueOutputBuffer(bufferInfo, TIMEOUT_US)
-            } catch (e: Exception) {
-                if (!isRunning.get()) break
-                Log.e(TAG, "Lỗi dequeueOutputBuffer: ${e.message}")
-                break
-            }
-
-            if (outputBufferId >= 0) {
-                val outputBuffer = currentCodec.getOutputBuffer(outputBufferId)
-
-                if (outputBuffer != null && bufferInfo.size > 0) {
-                    outputBuffer.position(bufferInfo.offset)
-                    outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
-
-                    val bufferData = ByteArray(bufferInfo.size)
-                    outputBuffer.get(bufferData)
-
-                    // 1. Nếu là buffer chứa thông tin cấu hình Codec (SPS/PPS):
-                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-                        Log.i(TAG, "Nhận BUFFER_FLAG_CODEC_CONFIG (${bufferData.size} bytes). Lưu lại SPS/PPS.")
-                        cachedSpsPps = bufferData
-                        // Gửi ngay gói cấu hình đầu tiên cho máy tính
-                        val configPacket = PacketWriter.createConfigPacket(width, height, bufferData)
-                        streamClient.enqueuePacket(configPacket, PacketWriter.TYPE_CONFIG)
+                val outputBufferId = try {
+                    currentCodec.dequeueOutputBuffer(bufferInfo, TIMEOUT_US)
+                } catch (e: Exception) {
+                    if (isRunning.get()) {
+                        Log.e(TAG, "Lỗi dequeueOutputBuffer: ${e.message}")
+                        onError(e)
                     }
-                    // 2. Nếu là Keyframe (I-frame):
-                    else if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) {
-                        val sps = cachedSpsPps
-                        // Quy tắc: Luôn gửi gói Loại 0 (Config) ngay trước mỗi Keyframe
-                        if (sps != null) {
-                            val configPacket = PacketWriter.createConfigPacket(width, height, sps)
-                            streamClient.enqueuePacket(configPacket, PacketWriter.TYPE_CONFIG)
+                    break
+                }
+
+                if (outputBufferId >= 0) {
+                    val outputBuffer = currentCodec.getOutputBuffer(outputBufferId)
+
+                    if (outputBuffer != null && bufferInfo.size > 0) {
+                        outputBuffer.position(bufferInfo.offset)
+                        outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
+
+                        val bufferData = ByteArray(bufferInfo.size)
+                        outputBuffer.get(bufferData)
+
+                        // 1. Buffer chứa thông tin cấu hình Codec (SPS/PPS):
+                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                            if (PacketWriter.isValidSpsPps(bufferData)) {
+                                Log.i(TAG, "Nhận BUFFER_FLAG_CODEC_CONFIG hợp lệ (${bufferData.size} bytes). Lưu lại SPS/PPS.")
+                                cachedSpsPps = bufferData
+                                // Gửi ngay gói cấu hình đầu tiên cho máy tính
+                                val configPacket = PacketWriter.createConfigPacket(width, height, bufferData)
+                                streamClient.enqueuePacket(configPacket, PacketWriter.TYPE_CONFIG)
+                            } else {
+                                Log.w(TAG, "CẢNH BÁO: BUFFER_FLAG_CODEC_CONFIG không đúng định dạng SPS/PPS (cần bắt đầu 00 00 00 01 67 và chứa 00 00 00 01 68). Bỏ qua.")
+                            }
                         }
+                        // 2. Buffer là Keyframe (I-frame):
+                        else if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) {
+                            val sps = cachedSpsPps
+                            // Quy tắc: Luôn gửi gói Loại 0 (Config) ngay trước mỗi Keyframe
+                            if (sps != null) {
+                                val configPacket = PacketWriter.createConfigPacket(width, height, sps)
+                                streamClient.enqueuePacket(configPacket, PacketWriter.TYPE_CONFIG)
+                            }
 
-                        // Gửi gói Loại 1 (Keyframe)
-                        val keyframePacket = PacketWriter.createFramePacket(
-                            PacketWriter.TYPE_KEYFRAME,
-                            bufferData,
-                            0,
-                            bufferData.size
-                        )
-                        streamClient.enqueuePacket(keyframePacket, PacketWriter.TYPE_KEYFRAME)
+                            // Gửi gói Loại 1 (Keyframe)
+                            val keyframePacket = PacketWriter.createFramePacket(
+                                PacketWriter.TYPE_KEYFRAME,
+                                bufferData,
+                                0,
+                                bufferData.size
+                            )
+                            streamClient.enqueuePacket(keyframePacket, PacketWriter.TYPE_KEYFRAME)
+                        }
+                        // 3. Buffer là Khung hình thường (P-frame / Delta frame):
+                        else {
+                            val deltaPacket = PacketWriter.createFramePacket(
+                                PacketWriter.TYPE_DELTA,
+                                bufferData,
+                                0,
+                                bufferData.size
+                            )
+                            streamClient.enqueuePacket(deltaPacket, PacketWriter.TYPE_DELTA)
+                        }
                     }
-                    // 3. Khung hình thường (P-frame / Delta frame):
-                    else {
-                        val deltaPacket = PacketWriter.createFramePacket(
-                            PacketWriter.TYPE_DELTA,
-                            bufferData,
-                            0,
-                            bufferData.size
-                        )
-                        streamClient.enqueuePacket(deltaPacket, PacketWriter.TYPE_DELTA)
+
+                    try {
+                        currentCodec.releaseOutputBuffer(outputBufferId, false)
+                    } catch (_: Exception) {}
+                } else if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val newFormat = currentCodec.outputFormat
+                    Log.i(TAG, "Định dạng output của MediaCodec thay đổi: $newFormat")
+
+                    // CHỈ trích xuất csd-0/csd-1 khi cachedSpsPps chưa có (không ghi đè bản lấy từ buffer CODEC_CONFIG)
+                    if (cachedSpsPps == null) {
+                        val csd0 = newFormat.getByteBuffer("csd-0")
+                        val csd1 = newFormat.getByteBuffer("csd-1")
+                        val combined = PacketWriter.combineCsdBuffers(csd0, csd1)
+                        if (combined != null) {
+                            Log.i(TAG, "Đã trích xuất và ghép SPS/PPS từ format csd-0/csd-1 thành công (${combined.size} bytes).")
+                            cachedSpsPps = combined
+                            val configPacket = PacketWriter.createConfigPacket(width, height, combined)
+                            streamClient.enqueuePacket(configPacket, PacketWriter.TYPE_CONFIG)
+                        } else {
+                            Log.w(TAG, "CẢNH BÁO: Dữ liệu csd-0/csd-1 không phải SPS/PPS hợp lệ (cần bắt đầu 00 00 00 01 67 và chứa 00 00 00 01 68). Bỏ qua.")
+                        }
                     }
                 }
-
-                try {
-                    currentCodec.releaseOutputBuffer(outputBufferId, false)
-                } catch (_: Exception) {}
-            } else if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                val newFormat = currentCodec.outputFormat
-                Log.i(TAG, "Định dạng output của MediaCodec thay đổi: $newFormat")
-                // Trích xuất SPS/PPS từ format nếu có
-                val csd0 = newFormat.getByteBuffer("csd-0")
-                val csd1 = newFormat.getByteBuffer("csd-1")
-                if (csd0 != null && csd1 != null) {
-                    val spsPps = ByteArray(csd0.remaining() + csd1.remaining())
-                    csd0.get(spsPps, 0, csd0.remaining())
-                    csd1.get(spsPps, csd0.remaining(), csd1.remaining())
-                    cachedSpsPps = spsPps
-                    val configPacket = PacketWriter.createConfigPacket(width, height, spsPps)
-                    streamClient.enqueuePacket(configPacket, PacketWriter.TYPE_CONFIG)
-                }
+            }
+        } catch (t: Throwable) {
+            if (isRunning.get()) {
+                Log.e(TAG, "Lỗi bất thường trong drainLoop: ${t.message}", t)
+                onError(t)
             }
         }
     }
@@ -248,9 +276,9 @@ class ScreenEncoder(
     /**
      * Xử lý xoay màn hình (Orientation Change):
      * - Dừng luồng drain và giải phóng MediaCodec cũ.
-     * - Khởi tạo MediaCodec mới với kích thước mới.
-     * - Gọi resize() và setSurface() trên CHÍNH VirtualDisplay hiện tại
-     *   (Android 14 cấm tạo VirtualDisplay thứ 2 từ cùng MediaProjection).
+     * - Khởi tạo MediaCodec mới với kích thước mới (có thể làm tròn xuống bội số 16).
+     * - Dùng chính this.width/this.height đã làm tròn cho virtualDisplay.resize()
+     *   và setSurface() trên CHÍNH VirtualDisplay hiện có.
      */
     fun reconfigure(newWidth: Int, newHeight: Int, newDpi: Int) {
         if (!isRunning.get()) return
@@ -278,12 +306,12 @@ class ScreenEncoder(
         } catch (_: Exception) {}
         inputSurface = null
 
-        // Khởi tạo codec và Surface mới với kích thước mới
+        // Khởi tạo codec và Surface mới với kích thước mới (this.width, this.height có thể được làm tròn)
         initCodecAndSurface()
 
-        // Cập nhật lại chính VirtualDisplay hiện có
+        // Cập nhật lại chính VirtualDisplay hiện có với this.width, this.height
         virtualDisplay?.let { vd ->
-            vd.resize(newWidth, newHeight, newDpi)
+            vd.resize(this.width, this.height, this.densityDpi)
             vd.surface = inputSurface
         }
 
@@ -295,7 +323,7 @@ class ScreenEncoder(
 
         // Yêu cầu Keyframe mới với kích thước mới
         requestSyncFrame()
-        Log.i(TAG, "Đã reconfigure thành công VirtualDisplay sang ${newWidth}x${newHeight}.")
+        Log.i(TAG, "Đã reconfigure thành công VirtualDisplay sang ${this.width}x${this.height}.")
     }
 
     /**
