@@ -99,9 +99,61 @@ python mock_sender.py
 
 ---
 
-## 6. Hướng dẫn đo độ trễ (Latency Test)
+## 5. Hướng dẫn chạy và Kiểm thử Bước 2 (Ứng dụng Android)
+
+### Bước 2.1: Mở dự án trong Android Studio
+1. Mở **Android Studio**.
+2. Chọn **Open** và duyệt tới thư mục `android/` (đường dẫn: `c:\minh\app\truyen_anh\android`).
+3. Đợi Android Studio đồng bộ Gradle (Sync Project with Gradle Files).
+
+### Bước 2.2: Bật Gỡ lỗi USB trên điện thoại Oppo (ColorOS)
+1. Mở **Cài đặt** (Settings) -> **Giới thiệu thiết bị** (About Device) -> **Phiên bản** (Version).
+2. Chạm liên tục 7 lần vào dòng **Số bản dựng** (Build number) cho đến khi hiện thông báo *"Bạn đã là nhà phát triển"*.
+3. Quay lại **Cài đặt** -> **Cài đặt bổ sung** (Additional settings) -> **Tùy chọn cho nhà phát triển** (Developer options).
+4. Bật 2 mục sau:
+   - **Gỡ lỗi USB** (USB debugging).
+   - **Cài đặt qua USB** (Install via USB) và **Xác minh ứng dụng qua USB**.
+5. Cắm cáp USB nối điện thoại với máy tính, khi điện thoại hiện hộp thoại hỏi *"Cho phép gỡ lỗi USB?"*, tích chọn *"Luôn cho phép từ máy tính này"* và bấm **Cho phép**.
+
+### Bước 2.3: Build và Cài đặt file APK
+**Cách 1 (Từ Android Studio):**
+- Bấm nút **Run 'app'** (tam giác màu xanh) trên thanh công cụ để Android Studio tự động nạp app lên điện thoại.
+
+**Cách 2 (Từ dòng lệnh Terminal / PowerShell):**
+```powershell
+cd android
+# 1. Chạy Unit Test kiểm tra giao thức
+.\gradlew.bat test
+
+# 2. Build file APK Debug
+.\gradlew.bat assembleDebug
+
+# 3. Cài trực tiếp lên điện thoại qua ADB (nếu cắm cáp USB)
+C:\Users\lenovo\AppData\Local\Android\Sdk\platform-tools\adb.exe install -r app\build\outputs\apk\debug\app-debug.apk
+```
+*(File APK đã build xong nằm tại: `android/app/build/outputs/apk/debug/app-debug.apk`)*
+
+---
+
+## 6. Danh sách kiểm tra khi chạy thử (Checklist)
+
+Khi chạy thử hệ thống hoàn chỉnh:
+- [ ] **Mở máy tính:** Chạy `python pc/main.py`. Đảm bảo máy tính và điện thoại kết nối **cùng một mạng Wi-Fi**.
+- [ ] **Ghi nhận IP:** Xem địa chỉ IP máy tính và Cổng `8554` trên cửa sổ Windows.
+- [ ] **Mở app Android:** Nhập đúng địa chỉ IP trên vào ô IP, bấm nút **Bắt đầu truyền màn hình**.
+- [ ] **Cấp quyền:** Hệ thống Android hiển thị hộp thoại *"Screen Share sẽ bắt đầu ghi lại mọi thứ trên màn hình của bạn"*, bấm **Bắt đầu ngay** (Start now).
+- [ ] **Quan sát:** Cửa sổ Windows lập tức hiện màn hình điện thoại mượt mà, FPS đạt ~30 FPS, độ trễ thấp.
+- [ ] **Thử xoay màn hình:** Xoay điện thoại từ dọc sang ngang (Landscape), kiểm tra cửa sổ Windows có tự động co giãn và giữ đúng tỉ lệ không.
+- [ ] **Thử dừng và kết nối lại:** Bấm **Dừng** trên app Android (hoặc bấm Dừng trên thanh thông báo Notification), sau đó bấm **Bắt đầu** lại để kiểm tra khả năng tái kết nối.
+- [ ] **Thử ngắt kết nối đột ngột:** Tắt cửa sổ Windows trong lúc điện thoại đang truyền -> kiểm tra app Android có dọn dẹp tài nguyên và báo lỗi rõ ràng hay không.
+- [ ] **Tắt tối ưu pin Oppo:** Bấm nút **"Mở cài đặt pin (Oppo)"** trên app -> cấp quyền *"Cho phép hoạt động dưới nền"* để tránh ColorOS tự tắt app khi khóa màn hình.
+
+---
+
+## 7. Hướng dẫn đo độ trễ (Latency Test)
 
 1. Mở một trang web đồng hồ bấm giờ trực tuyến (ví dụ [stopwatch.onlineclock.net](https://stopwatch.onlineclock.net) hoặc đồng hồ mili-giây) trên màn hình máy tính hoặc điện thoại.
 2. Để điện thoại quay vào màn hình máy tính hoặc hiển thị đồng hồ trên điện thoại.
 3. Chụp một bức ảnh bao gồm cả màn hình máy tính và màn hình điện thoại trong cùng 1 bức ảnh.
 4. Lấy số mili-giây trên màn hình máy tính trừ đi số mili-giây trên điện thoại: đó chính là độ trễ thực tế từ đầu tới cuối (End-to-End Latency). Mục tiêu đạt được: dưới **100ms - 150ms** trên mạng Wi-Fi tiêu chuẩn.
+

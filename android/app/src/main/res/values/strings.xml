@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Screen Share</string>
+    <string name="title_settings">Cấu hình kết nối</string>
+    <string name="hint_ip">IP máy tính (VD: 192.168.1.15)</string>
+    <string name="hint_port">Cổng (Mặc định: 8554)</string>
+    <string name="btn_start">Bắt đầu truyền màn hình</string>
+    <string name="btn_stop">Dừng truyền</string>
+    <string name="btn_battery">Mở cài đặt pin (Oppo)</string>
+    <string name="status_idle">Trạng thái: Chưa kết nối</string>
+    <string name="status_connecting">Trạng thái: Đang kết nối tới máy tính...</string>
+    <string name="status_streaming">Trạng thái: Đang truyền màn hình (Trực tiếp)</string>
+    <string name="notification_channel_name">Luồng truyền màn hình</string>
+    <string name="notification_title">Đang chia sẻ màn hình điện thoại</string>
+    <string name="notification_text">Đang truyền trực tiếp lên máy tính Windows</string>
+    <string name="notification_action_stop">Dừng</string>
+</resources>
