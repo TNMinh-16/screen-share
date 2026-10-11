@@ -17,6 +17,7 @@ logger = logging.getLogger("Receiver")
 PACKET_TYPE_CONFIG = 0    # Gói cấu hình: SPS/PPS kèm chiều rộng và chiều cao (Width, Height)
 PACKET_TYPE_KEYFRAME = 1  # Gói khung hình chính (I-frame / Keyframe)
 PACKET_TYPE_DELTA = 2     # Gói khung hình thường (P-frame)
+PACKET_TYPE_RESYNC = 255  # Gói nội bộ: báo decoder chờ Keyframe tiếp theo (không đi qua mạng)
 
 
 class StreamReceiver(threading.Thread):
@@ -125,16 +126,18 @@ class StreamReceiver(threading.Thread):
             if not payload_data:
                 break
 
-            # Đẩy gói tin vào hàng đợi
-            # Nếu hàng đợi đầy (ví dụ decoder bị nghẽn), xóa bớt frame cũ để tránh tràn RAM
+            # Đẩy gói tin vào hàng đợi.
+            # Nếu hàng đợi đầy: KHÔNG bỏ lẻ 1 gói (sẽ làm vỡ hình). Xóa hết rồi báo
+            # decoder chờ Keyframe tiếp theo (gói RESYNC).
             try:
                 self.packet_queue.put_nowait((packet_type, payload_data))
             except queue.Full:
                 try:
-                    # Lấy bớt 1 phần tử cũ ra để nhường chỗ
-                    self.packet_queue.get_nowait()
+                    while True:
+                        self.packet_queue.get_nowait()
                 except queue.Empty:
                     pass
+                self.packet_queue.put((PACKET_TYPE_RESYNC, b""))
                 self.packet_queue.put((packet_type, payload_data))
 
     def _read_exact(self, num_bytes):

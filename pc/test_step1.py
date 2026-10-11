@@ -65,7 +65,9 @@ def test_pipeline():
 
     # Chạy mock_sender gửi video test trong tiến trình con
     print("[TEST] Khởi chạy mock_sender...")
-    cmd = [sys.executable, "pc/mock_sender.py", "--host", "127.0.0.1", "--port", "8554", "--fps", "30", "--no-rotation"]
+    import os
+    mock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mock_sender.py")
+    cmd = [sys.executable, mock_path, "--host", "127.0.0.1", "--port", "8554", "--fps", "30", "--no-rotation"]
     sender_proc = subprocess.Popen(cmd)
 
     frames_received = 0

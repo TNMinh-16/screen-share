@@ -41,6 +41,8 @@ class H264Decoder(threading.Thread):
 
         self.width = 0
         self.height = 0
+        self.current_sps_pps = None
+        self._reset_requested = False
 
     def _init_codec(self, extradata=None):
         """Khởi tạo hoặc reset lại FFmpeg CodecContext với độ trễ thấp nhất."""
@@ -61,10 +63,27 @@ class H264Decoder(threading.Thread):
             self.codec = None
 
     def reset(self):
-        """Reset trạng thái decoder khi client ngắt kết nối hoặc có phiên mới."""
+        """
+        Yêu cầu reset khi client ngắt kết nối (được gọi từ luồng Receiver).
+        Chỉ đặt cờ và xóa gói cũ; việc reset thật do chính luồng decoder làm
+        để không xảy ra tranh chấp (race) khi đang giải mã dở.
+        """
+        self._reset_requested = True
+        try:
+            while True:
+                self.packet_queue.get_nowait()
+        except queue.Empty:
+            pass
+
+    def _do_reset(self):
+        """Reset toàn bộ trạng thái phiên (chạy trong luồng decoder)."""
+        self._reset_requested = False
         self.has_config = False
         self.has_first_keyframe = False
         self.skipping_to_keyframe = False
+        self.width = 0
+        self.height = 0
+        self.current_sps_pps = None
         self._init_codec()
 
     def run(self):
@@ -73,6 +92,8 @@ class H264Decoder(threading.Thread):
         self._init_codec()
 
         while self.running:
+            if self._reset_requested:
+                self._do_reset()
             try:
                 # Đợi gói tin mới với timeout 0.1s để có thể kiểm tra cờ self.running
                 packet_item = self.packet_queue.get(timeout=0.1)
@@ -94,6 +115,11 @@ class H264Decoder(threading.Thread):
 
     def _process_packet(self, packet_type, payload):
         """Xử lý từng loại gói tin theo quy tắc đồng bộ video."""
+
+        # 0. Gói RESYNC (do Receiver gửi khi hàng đợi tràn): chờ Keyframe tiếp theo
+        if packet_type == 255:
+            self.skipping_to_keyframe = True
+            return
 
         # 1. Gói Loại 0: Cấu hình (Width, Height, SPS/PPS)
         if packet_type == 0:
@@ -135,6 +161,10 @@ class H264Decoder(threading.Thread):
                 logger.info("Đã gặp Keyframe tiếp theo, khôi phục giải mã bình thường.")
                 self.skipping_to_keyframe = False
 
+            # Gắn SPS/PPS vào đầu keyframe (in-band) để luôn giải mã được,
+            # kể cả sau khi kết nối lại.
+            if self.current_sps_pps:
+                payload = self.current_sps_pps + payload
             self._decode_and_push(payload)
             return
 
