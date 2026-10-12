@@ -11,10 +11,12 @@ import android.content.pm.ServiceInfo
 import android.hardware.display.DisplayManager
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
@@ -76,6 +78,10 @@ class ScreenStreamService : Service() {
     private var currentWidth = 0
     private var currentHeight = 0
     private var currentDpi = 0
+
+    // Khóa giữ CPU và Wi-Fi để tránh giảm hiệu năng / jitter khi truyền
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     // Biến cho việc ghi log thống kê định kỳ
     private var lastLogTime = 0L
@@ -151,6 +157,9 @@ class ScreenStreamService : Service() {
         isControlEnabled = initialControlEnabled
         AppState.setControlEnabled(initialControlEnabled)
         AppState.updateState(StreamState.Connecting)
+
+        // Giữ WakeLock và WifiLock để giảm thiểu jitter mạng và tránh CPU bị hạ xung
+        acquireLocks()
 
         // BƯỚC 1: Tạo NotificationChannel và gọi startForeground() NGAY LẬP TỨC
         createNotificationChannel()
@@ -356,7 +365,9 @@ class ScreenStreamService : Service() {
     }
 
     /**
-     * Ghi log thống kê (Logcat tag "ScreenShare") mỗi 2 giây.
+     * Ghi log thống kê (Logcat tag "ScreenShare") mỗi 2 giây:
+     * - FPS thực của encoder, độ lệch chuẩn khoảng cách giữa các khung (jitter), kích thước keyframe lớn nhất
+     * - FPS và bitrate gửi qua Socket, dung lượng hàng đợi.
      */
     private fun logStatistics() {
         val client = streamClient ?: return
@@ -370,15 +381,22 @@ class ScreenStreamService : Service() {
             val deltaFrames = totalFrames - lastFramesSent
             val deltaBytes = totalBytes - lastBytesSent
 
-            val fps = deltaFrames / durationSec
+            val sentFps = deltaFrames / durationSec
             val bitrateKbps = (deltaBytes * 8 / durationSec) / 1000.0
+
+            val encStats = screenEncoder?.getAndResetStats()
+            val encFpsStr = if (encStats != null) String.format("%.1f", encStats.fps) else "N/A"
+            val jitterStr = if (encStats != null) String.format("%.2f", encStats.jitterStdDevMs) else "N/A"
+            val maxKfStr = if (encStats != null) "${encStats.maxKeyframeBytes} B" else "N/A"
 
             Log.i(
                 TAG,
                 String.format(
-                    "[THỐNG KÊ] Gửi: %d khung | FPS: %.1f | Bitrate: %.1f kbps | Hàng đợi: %d gói",
-                    totalFrames,
-                    fps,
+                    "[THỐNG KÊ 2S] Encoder: FPS = %s, Jitter (StdDev) = %s ms, Max KF = %s | Socket: FPS = %.1f, Bitrate = %.1f kbps, Hàng đợi = %d gói",
+                    encFpsStr,
+                    jitterStr,
+                    maxKfStr,
+                    sentFps,
                     bitrateKbps,
                     client.currentQueueSize
                 )
@@ -387,6 +405,56 @@ class ScreenStreamService : Service() {
             lastLogTime = now
             lastFramesSent = totalFrames
             lastBytesSent = totalBytes
+        }
+    }
+
+    private fun acquireLocks() {
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ScreenShare:StreamWakeLock")?.apply {
+                setReferenceCounted(false)
+                acquire(10 * 60 * 60 * 1000L) // Giữ tối đa 10 tiếng
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Không thể lấy WakeLock: ${e.message}")
+        }
+
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            @Suppress("DEPRECATION")
+            val wifiMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wifiLock = wifiManager?.createWifiLock(wifiMode, "ScreenShare:StreamWifiLock")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Không thể lấy WifiLock: ${e.message}")
+        }
+    }
+
+    private fun releaseLocks() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) it.release()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Lỗi khi nhả WakeLock: ${e.message}")
+        } finally {
+            wakeLock = null
+        }
+
+        try {
+            wifiLock?.let {
+                if (it.isHeld) it.release()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Lỗi khi nhả WifiLock: ${e.message}")
+        } finally {
+            wifiLock = null
         }
     }
 
@@ -450,6 +518,9 @@ class ScreenStreamService : Service() {
 
         // 5. Dừng Foreground
         stopForeground(STOP_FOREGROUND_REMOVE)
+
+        // Nhả WakeLock và WifiLock khi dừng phiên truyền
+        releaseLocks()
 
         if (AppState.streamState.value !is StreamState.Error) {
             AppState.updateState(StreamState.Idle)

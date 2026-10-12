@@ -63,23 +63,56 @@ Mỗi gói tin truyền qua TCP socket có cấu trúc nhị phân (Big-Endian):
 2. **Xử lý khi giật lag nặng:** Nếu hàng đợi mạng dồn quá ngưỡng (> 50 gói ở 60 FPS do mạng chập chờn hoặc máy bận), decoder chuyển sang trạng thái bỏ qua các khung thường (P-frame) và nhảy thẳng đến Keyframe tiếp theo để khôi phục ngay độ trễ thấp nhất mà không bị vỡ hình.
 3. **Đồng bộ bắt đầu:** Bộ giải mã chỉ xuất hình sau khi nhận đủ gói cấu hình (Type 0) và Keyframe đầu tiên (Type 1).
 
-### Cấu hình hiệu năng Video (60 FPS vs 30 FPS)
+### 3.1. Các hằng số hiệu năng chính (Dễ dàng tinh chỉnh)
 
-- **Thông số mặc định hiện tại (60 FPS siêu mượt):**
-  - **Tốc độ khung hình (FRAME_RATE):** `60 FPS` (file `VideoConfig.kt`)
-  - **Bitrate (BIT_RATE):** `8 Mbps` (`8_000_000 bps`, file `VideoConfig.kt`)
-  - **H.264 Level:** `AVCLevel4` (file `ScreenEncoder.kt`, hỗ trợ 720p tại 60 FPS)
-  - **Ngưỡng chống lag (LAG_PACKET_THRESHOLD):** `50 gói` (file `pc/decoder.py`)
+> ⚠️ **LƯU Ý VỀ TẦN SỐ QUÉT PHẦN CỨNG (60 Hz LÀ TRẦN):**  
+> Màn hình điện thoại Oppo A15s (và hầu hết smartphone phổ thông) có tần số quét phần cứng là **60 Hz**, do đó **60 FPS là trần tối đa thực tế**, hệ điều hành Android không thể render hoặc xuất hình ảnh nhanh hơn 60 khung hình/giây. Mọi tối ưu hóa trong hệ thống tập trung vào việc duy trì **độ ĐỀU ĐẶN của nhịp khung hình** và **triệt tiêu độ TRỄ** ở mức tối đa.
 
-- **Cách quay lại chế độ 30 FPS (nếu điện thoại nóng máy, tốn pin hoặc mạng Wi-Fi yếu):**
-  1. Mở file `android/app/src/main/java/com/minh/screenshare/config/VideoConfig.kt`:
-     - Đổi `FRAME_RATE = 30`
-     - Đổi `BIT_RATE = 5_000_000` (5 Mbps)
-  2. Mở file `android/app/src/main/java/com/minh/screenshare/encoder/ScreenEncoder.kt`:
-     - Đổi `AVCLevel4` thành `MediaCodecInfo.CodecProfileLevel.AVCLevel31`
-  3. Mở file `pc/decoder.py`:
-     - Đổi `LAG_PACKET_THRESHOLD = 25`
-  4. Build lại APK debug bằng lệnh: `.\gradlew.bat assembleDebug`
+| Hằng số | File vị trí | Giá trị mặc định | Ý nghĩa & Hướng dẫn tinh chỉnh |
+| :--- | :--- | :--- | :--- |
+| **`PRESENT_BUFFER_FRAMES`** | `pc/viewer.py`<br>`pc/decoder.py` | `1` | **Bộ đệm hiển thị khung hình phía PC:**<br>• `0`: Hiển thị ngay khung mới nhất (độ trễ thấp nhất có thể, nhưng có thể hơi giật nếu Wi-Fi có jitter).<br>• `1` (Khuyên dùng): Bộ đệm 1 khung hình với nhịp quét đều 16 ms (PreciseTimer ~60 FPS).<br>• `2`: Mượt hơn khi mạng Wi-Fi chập chờn, tăng thêm ~16-32 ms độ trễ. |
+| **`I_FRAME_INTERVAL`** | `VideoConfig.kt` | `2` (giây) | **Chu kỳ sinh Keyframe định kỳ:** Đặt 2 giây giúp giảm gánh nặng CPU và băng thông mạng so với 1 giây, trong khi encoder vẫn luôn tự động tạo Keyframe ngay lập tức khi vừa kết nối hoặc khi PC yêu cầu đồng bộ. |
+| **`MAX_LONG_EDGE`** | `VideoConfig.kt` | `1280` px | **Cạnh dài tối đa của video:** Tự động co giãn theo tỉ lệ màn hình gốc (HD 720p). Nếu muốn nét hơn nữa trên máy tính mạnh có thể nâng lên `1600` hoặc `1920`. Nếu muốn siêu nhẹ máy, giảm xuống `960`. |
+| **`BIT_RATE`** | `VideoConfig.kt` | `8_000_000` (8 Mbps) | **Băng thông video:** 8 Mbps cho hình ảnh cực kỳ sắc nét ở 60 FPS. Nếu sóng Wi-Fi xa hoặc yếu, có thể hạ xuống `4_000_000` hoặc `5_000_000`. |
+| **`SOCKET_SEND_BUFFER_BYTES`** | `VideoConfig.kt` | `262_144` (256 KB) | **Bộ đệm gửi tầng Socket (SO_SNDBUF):** Giới hạn vừa phải 256 KB để ngăn tích tụ độ trễ mạng trong kernel Android khi có gói lớn. |
+
+---
+
+### 3.2. Cách đọc Bảng thống kê (Hiện thống kê) để xác định nút thắt (Bottleneck)
+
+Trên giao diện máy tính, tích chọn **"Hiện thống kê"** trên thanh công cụ để theo dõi các chỉ số theo thời gian thực (được cập nhật mỗi giây và ghi ra log mỗi 5 giây):
+
+```text
+📥 Nhận: 60.0 FPS | ⚙️ Giải mã: 60.0 FPS (1.2 ms) | 🖥️ Hiển thị: 60.0 FPS (0.8 ms) | 📦 Hàng đợi: 1 gói / 1 khung | ⚠️ Bỏ: 0 | 🔄 Nhảy Keyframe: 0
+```
+
+1. **Nếu FPS Nhận (RX FPS) < 50 FPS:**
+   - **Nút thắt:** Nằm ở **Đường truyền Wi-Fi** hoặc **Encoder trên điện thoại**.
+   - **Hiện tượng:** Điện thoại chưa kịp gửi đủ số khung qua mạng (do sóng yếu, nhiễu kênh 2.4GHz, hoặc chip MediaTek đang bị nóng hạ xung).
+   - **Khắc phục:** Đặt điện thoại gần router hơn, dùng băng tần 5GHz hoặc phát Wi-Fi Hotspot trực tiếp từ điện thoại cho máy tính; giảm `MAX_LONG_EDGE` xuống `960` hoặc `BIT_RATE` xuống `5 Mbps`.
+2. **Nếu FPS Nhận ~60 nhưng FPS Giải mã (Dec FPS) thấp & Thời gian giải mã > 15 ms:**
+   - **Nút thắt:** Nằm ở **CPU máy tính / Bộ giải mã PyAV**.
+   - **Khắc phục:** Đảm bảo máy tính cắm nguồn điện; đóng bớt các ứng dụng ngốn CPU trên PC; ứng dụng đã tự động đặt ưu tiên `ABOVE_NORMAL` trên Windows.
+3. **Nếu FPS Giải mã ~60 nhưng FPS Hiển thị (Render FPS) thấp & Thời gian vẽ > 16 ms:**
+   - **Nút thắt:** Nằm ở **Card màn hình / Vòng lặp vẽ Qt trên PC**.
+   - **Khắc phục:** Thu nhỏ bớt cửa sổ máy tính; kiểm tra driver đồ họa trên Windows.
+4. **Chỉ số Bỏ khung (Bỏ / Dropped) tăng liên tục:**
+   - **Nút thắt:** Tốc độ hiển thị của máy tính không theo kịp tốc độ giải mã, bộ đệm `display_queue` bị đầy và phải bỏ khung cũ để giữ độ trễ thấp.
+5. **Chỉ số Nhảy Keyframe (Resync) tăng:**
+   - **Nút thắt:** Hàng đợi mạng dồn quá 50 gói hoặc luồng TCP bị nghẽn mạng cục bộ, decoder đã chủ động nhảy cóc tới Keyframe tiếp theo để triệt tiêu độ trễ.
+
+---
+
+### 3.3. Cách quay lại cấu hình cũ (Rollback Guide)
+
+Nếu bạn muốn quay về cấu hình nguyên bản ban đầu:
+1. **Phía PC (`pc/viewer.py` & `pc/decoder.py`):**
+   - Đặt `PRESENT_BUFFER_FRAMES = 0` trong `pc/viewer.py` và `pc/decoder.py` để quay về cơ chế chỉ giữ 1 khung mới nhất.
+   - Trong `pc/viewer.py`, đổi `self.render_timer.start(16)` về `self.render_timer.start(5)`.
+2. **Phía Android (`VideoConfig.kt`):**
+   - Đổi `I_FRAME_INTERVAL = 1` (chu kỳ 1 giây).
+   - Đổi `SOCKET_SEND_BUFFER_BYTES` về mặc định hệ thống (xóa dòng gán `sendBufferSize` trong `StreamClient.kt`).
+3. **Build lại APK:** Chạy `.\gradlew.bat assembleDebug`.
 
 ---
 

@@ -14,6 +14,9 @@
     <!-- Quyền thông báo (cho Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Quyền giữ CPU và Wi-Fi hoạt động ổn định khi truyền (WakeLock / WifiLock) -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

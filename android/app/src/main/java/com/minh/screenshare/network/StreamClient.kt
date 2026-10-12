@@ -72,6 +72,13 @@ class StreamClient(
         // Bật TCP_NODELAY để loại bỏ độ trễ của thuật toán Nagle
         newSocket.tcpNoDelay = true
 
+        // Đặt SO_SNDBUF vừa phải (256 KB) để giảm trễ do bộ đệm mạng quá lớn
+        try {
+            newSocket.sendBufferSize = VideoConfig.SOCKET_SEND_BUFFER_BYTES
+        } catch (e: Exception) {
+            Log.w(TAG, "Không thể đặt sendBufferSize (SO_SNDBUF): ${e.message}")
+        }
+
         socket = newSocket
         outputStream = BufferedOutputStream(newSocket.getOutputStream(), 64 * 1024)
 
@@ -168,6 +175,11 @@ class StreamClient(
      * Vòng lặp gửi dữ liệu qua Socket trên luồng riêng.
      */
     private fun sendLoop() {
+        // Tăng ưu tiên luồng gửi để đẩy gói tin ra mạng ngay lập tức
+        try {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
+        } catch (_: Exception) {}
+
         try {
             val out = outputStream ?: return
             while (isRunning.get()) {

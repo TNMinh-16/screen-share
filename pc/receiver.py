@@ -48,6 +48,17 @@ class StreamReceiver(threading.Thread):
         self.client_addr = None
         self._send_lock = threading.Lock()
 
+        # Thống kê số lượng gói nhận được
+        self.received_packets_count = 0
+        self._stats_lock = threading.Lock()
+
+    def get_and_reset_rx_stats(self) -> int:
+        """Trả về và đặt lại số gói nhận được để tính FPS nhận."""
+        with self._stats_lock:
+            cnt = self.received_packets_count
+            self.received_packets_count = 0
+            return cnt
+
     def run(self):
         """Vòng lặp chính của server: lắng nghe và xử lý kết nối."""
         self.running = True
@@ -144,6 +155,9 @@ class StreamReceiver(threading.Thread):
             # Đẩy gói tin vào hàng đợi.
             # Nếu hàng đợi đầy: KHÔNG bỏ lẻ 1 gói (sẽ làm vỡ hình). Xóa hết rồi báo
             # decoder chờ Keyframe tiếp theo (gói RESYNC).
+            with self._stats_lock:
+                self.received_packets_count += 1
+
             try:
                 self.packet_queue.put_nowait((packet_type, payload_data))
             except queue.Full:

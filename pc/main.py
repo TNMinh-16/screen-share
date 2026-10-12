@@ -14,13 +14,22 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
+    # Đặt ưu tiên tiến trình Windows cao hơn bình thường (ABOVE_NORMAL) để giảm jitter
+    try:
+        import ctypes
+        ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
+        handle = ctypes.windll.kernel32.GetCurrentProcess()
+        ctypes.windll.kernel32.SetPriorityClass(handle, ABOVE_NORMAL_PRIORITY_CLASS)
+        logger.info("Đã đặt ưu tiên tiến trình Windows: ABOVE_NORMAL")
+    except Exception as e:
+        logger.warning(f"Không thể đặt ưu tiên tiến trình Windows: {e}")
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QObject, Signal
 
 from receiver import StreamReceiver
 from decoder import H264Decoder
-from viewer import MainWindow
+from viewer import MainWindow, PRESENT_BUFFER_FRAMES
 from control import ControlSender
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s][%(levelname)s] %(message)s")
@@ -45,15 +54,26 @@ def main():
     # 1. Hàng đợi trung gian
     # packet_queue: Receiver -> Decoder
     packet_queue = queue.Queue(maxsize=120)
-    # display_queue: Decoder -> GUI Viewer (chỉ lưu frame RGB mới nhất)
-    display_queue = queue.Queue(maxsize=2)
+    # display_queue: Decoder -> GUI Viewer (kích thước phù hợp theo PRESENT_BUFFER_FRAMES)
+    display_queue_size = max(10, PRESENT_BUFFER_FRAMES + 4)
+    display_queue = queue.Queue(maxsize=display_queue_size)
 
     # 2. Khởi tạo Cầu nối tín hiệu Qt
     bridge = EventBridge()
 
     DEFAULT_PORT = 8554
 
-    # 3. Khởi tạo và khởi động Receiver Thread
+    # 3. Khởi tạo Decoder Thread
+    def on_dimension_changed(w, h):
+        bridge.dimension_changed_signal.emit(w, h)
+
+    decoder = H264Decoder(
+        packet_queue=packet_queue,
+        display_queue=display_queue,
+        on_dimension_changed=on_dimension_changed
+    )
+
+    # 4. Khởi tạo và khởi động Receiver Thread
     def on_client_connected(addr):
         ip_str = f"{addr[0]}:{addr[1]}"
         logger.info(f"Kết nối mới từ: {ip_str}")
@@ -76,16 +96,19 @@ def main():
         on_control_state_changed=on_control_state_changed
     )
     receiver.start()
+    decoder.start()
 
-    # 4. Khởi tạo và khởi động ControlSender
+    # 5. Khởi tạo và khởi động ControlSender
     control_sender = ControlSender(receiver.send_bytes)
     control_sender.start()
 
-    # 5. Khởi tạo Giao diện cửa sổ
+    # 6. Khởi tạo Giao diện cửa sổ (truyền receiver và decoder cho thống kê và auto-scale)
     window = MainWindow(
         display_queue=display_queue,
         default_port=DEFAULT_PORT,
-        control_sender=control_sender
+        control_sender=control_sender,
+        receiver=receiver,
+        decoder=decoder
     )
 
     # Kết nối signals từ bridge vào các phương thức cập nhật UI của window
@@ -93,17 +116,6 @@ def main():
     bridge.client_disconnected_signal.connect(lambda: window.update_status(False))
     bridge.dimension_changed_signal.connect(lambda w, h: window.update_resolution(w, h))
     bridge.control_state_signal.connect(window.update_control_state)
-
-    # 6. Khởi tạo và khởi động Decoder Thread
-    def on_dimension_changed(w, h):
-        bridge.dimension_changed_signal.emit(w, h)
-
-    decoder = H264Decoder(
-        packet_queue=packet_queue,
-        display_queue=display_queue,
-        on_dimension_changed=on_dimension_changed
-    )
-    decoder.start()
 
     # 7. Dọn dẹp tài nguyên khi người dùng tắt cửa sổ
     def cleanup():

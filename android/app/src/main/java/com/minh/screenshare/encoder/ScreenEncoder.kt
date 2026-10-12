@@ -46,6 +46,45 @@ class ScreenEncoder(
     @Volatile
     private var cachedSpsPps: ByteArray? = null
 
+    // Thống kê hiệu năng encoder
+    private val statsLock = Any()
+    private var statsOutputFramesCount = 0
+    private var statsLastFrameTimeNs = 0L
+    private val statsFrameIntervalsMs = mutableListOf<Float>()
+    private var statsMaxKeyframeBytes = 0
+    private var statsStartTimeMs = System.currentTimeMillis()
+
+    data class EncoderStats(
+        val fps: Float,
+        val jitterStdDevMs: Float,
+        val maxKeyframeBytes: Int
+    )
+
+    fun getAndResetStats(): EncoderStats {
+        synchronized(statsLock) {
+            val now = System.currentTimeMillis()
+            val elapsedSec = maxOf(0.001f, (now - statsStartTimeMs) / 1000f)
+            val fps = statsOutputFramesCount / elapsedSec
+
+            val stdDevMs = if (statsFrameIntervalsMs.size > 1) {
+                val mean = statsFrameIntervalsMs.average().toFloat()
+                val variance = statsFrameIntervalsMs.map { (it - mean) * (it - mean) }.average().toFloat()
+                kotlin.math.sqrt(maxOf(0f, variance))
+            } else {
+                0f
+            }
+
+            val maxKf = statsMaxKeyframeBytes
+
+            statsOutputFramesCount = 0
+            statsFrameIntervalsMs.clear()
+            statsMaxKeyframeBytes = 0
+            statsStartTimeMs = now
+
+            return EncoderStats(fps, stdDevMs, maxKf)
+        }
+    }
+
     /**
      * Bắt đầu phiên mã hóa:
      * 1. Khởi tạo và cấu hình MediaCodec.
@@ -122,7 +161,12 @@ class ScreenEncoder(
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, VideoConfig.BIT_RATE)
             setInteger(MediaFormat.KEY_FRAME_RATE, VideoConfig.FRAME_RATE)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, VideoConfig.I_FRAME_INTERVAL_SECONDS)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, VideoConfig.I_FRAME_INTERVAL)
+
+            // Đặt tốc độ hoạt động mong muốn (OPERATING_RATE) bằng FPS mục tiêu
+            try {
+                setInteger(MediaFormat.KEY_OPERATING_RATE, VideoConfig.FRAME_RATE)
+            } catch (_: Exception) {}
 
             // CBR: Bitrate cố định
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
@@ -148,7 +192,7 @@ class ScreenEncoder(
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, VideoConfig.BIT_RATE)
             setInteger(MediaFormat.KEY_FRAME_RATE, VideoConfig.FRAME_RATE)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, VideoConfig.I_FRAME_INTERVAL_SECONDS)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, VideoConfig.I_FRAME_INTERVAL)
         }
     }
 
@@ -157,6 +201,11 @@ class ScreenEncoder(
      * Khi xảy ra lỗi hoặc thoát bất thường, kích hoạt callback onError để service dừng phiên.
      */
     private fun drainLoop() {
+        // Tăng ưu tiên luồng drain để đảm bảo không bị trễ khung hình
+        try {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
+        } catch (_: Exception) {}
+
         val bufferInfo = MediaCodec.BufferInfo()
 
         try {
@@ -197,6 +246,19 @@ class ScreenEncoder(
                         }
                         // 2. Buffer là Keyframe (I-frame):
                         else if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) {
+                            val nowNs = System.nanoTime()
+                            synchronized(statsLock) {
+                                statsOutputFramesCount++
+                                if (statsLastFrameTimeNs > 0) {
+                                    val intervalMs = (nowNs - statsLastFrameTimeNs) / 1_000_000f
+                                    statsFrameIntervalsMs.add(intervalMs)
+                                }
+                                statsLastFrameTimeNs = nowNs
+                                if (bufferInfo.size > statsMaxKeyframeBytes) {
+                                    statsMaxKeyframeBytes = bufferInfo.size
+                                }
+                            }
+
                             val sps = cachedSpsPps
                             // Quy tắc: Luôn gửi gói Loại 0 (Config) ngay trước mỗi Keyframe
                             if (sps != null) {
@@ -215,6 +277,16 @@ class ScreenEncoder(
                         }
                         // 3. Buffer là Khung hình thường (P-frame / Delta frame):
                         else {
+                            val nowNs = System.nanoTime()
+                            synchronized(statsLock) {
+                                statsOutputFramesCount++
+                                if (statsLastFrameTimeNs > 0) {
+                                    val intervalMs = (nowNs - statsLastFrameTimeNs) / 1_000_000f
+                                    statsFrameIntervalsMs.add(intervalMs)
+                                }
+                                statsLastFrameTimeNs = nowNs
+                            }
+
                             val deltaPacket = PacketWriter.createFramePacket(
                                 PacketWriter.TYPE_DELTA,
                                 bufferData,

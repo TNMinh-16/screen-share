@@ -12,12 +12,20 @@ import struct
 import threading
 import queue
 import logging
+import time
 import av
+from PySide6.QtGui import QImage
 
 logger = logging.getLogger("Decoder")
 
 # Ngưỡng số lượng gói dồn trong hàng đợi mạng trước khi kích hoạt nhảy đến Keyframe tiếp theo (50 gói phù hợp với 60 FPS)
 LAG_PACKET_THRESHOLD = 50
+
+# Cấu hình bộ đệm hiển thị:
+# 0 = Hiển thị ngay khung mới nhất (độ trễ thấp nhất)
+# 1 = Mặc định: bộ đệm 1 khung hình giúp nhịp hiển thị đều đặn 60 FPS
+# 2 = Mượt hơn nhưng tăng thêm 1 khung hình độ trễ (~16 ms)
+PRESENT_BUFFER_FRAMES = 1
 
 
 class H264Decoder(threading.Thread):
@@ -43,6 +51,38 @@ class H264Decoder(threading.Thread):
         self.height = 0
         self.current_sps_pps = None
         self._reset_requested = False
+
+        # Độ phân giải đích cho swscale (theo kích thước vùng vẽ hiện tại)
+        self.target_width = 0
+        self.target_height = 0
+
+        # Thống kê hiệu năng giải mã
+        self.decoded_frames_count = 0
+        self.dropped_frames_count = 0
+        self.total_decode_time = 0.0
+        self.decode_time_samples = 0
+        self.drop_to_keyframe_count = 0
+        self._stats_lock = threading.Lock()
+
+    def set_target_resolution(self, w: int, h: int):
+        """Đặt kích thước đích để swscale co giãn trực tiếp trong decoder."""
+        w_even = (w // 2) * 2
+        h_even = (h // 2) * 2
+        if w_even > 0 and h_even > 0:
+            self.target_width = w_even
+            self.target_height = h_even
+
+    def get_and_reset_stats(self):
+        """Lấy và đặt lại các số liệu thống kê giải mã."""
+        with self._stats_lock:
+            dec = self.decoded_frames_count
+            drop = self.dropped_frames_count
+            avg_ms = (self.total_decode_time / self.decode_time_samples * 1000.0) if self.decode_time_samples > 0 else 0.0
+            resyncs = self.drop_to_keyframe_count
+            self.decoded_frames_count = 0
+            self.total_decode_time = 0.0
+            self.decode_time_samples = 0
+            return dec, drop, avg_ms, resyncs
 
     def _init_codec(self, extradata=None):
         """Khởi tạo hoặc reset lại FFmpeg CodecContext với độ trễ thấp nhất."""
@@ -119,6 +159,8 @@ class H264Decoder(threading.Thread):
         # 0. Gói RESYNC (do Receiver gửi khi hàng đợi tràn): chờ Keyframe tiếp theo
         if packet_type == 255:
             self.skipping_to_keyframe = True
+            with self._stats_lock:
+                self.drop_to_keyframe_count += 1
             return
 
         # 1. Gói Loại 0: Cấu hình (Width, Height, SPS/PPS)
@@ -172,10 +214,14 @@ class H264Decoder(threading.Thread):
         if packet_type == 2:
             # Chưa có Keyframe đầu tiên -> bắt buộc bỏ qua để tránh vỡ hình
             if not self.has_first_keyframe:
+                with self._stats_lock:
+                    self.dropped_frames_count += 1
                 return
 
             # Nếu đang trong trạng thái bỏ qua do decoder bị chậm -> tiếp tục bỏ qua P-frame này
             if self.skipping_to_keyframe:
+                with self._stats_lock:
+                    self.dropped_frames_count += 1
                 return
 
             # Kiểm tra xem hàng đợi nhận có đang bị dồn ứ không
@@ -184,15 +230,19 @@ class H264Decoder(threading.Thread):
             if queue_len > LAG_PACKET_THRESHOLD:
                 logger.warning(f"Hàng đợi dồn {queue_len} gói (> {LAG_PACKET_THRESHOLD}). Kích hoạt bỏ qua đến Keyframe tiếp theo để triệt tiêu độ trễ!")
                 self.skipping_to_keyframe = True
+                with self._stats_lock:
+                    self.drop_to_keyframe_count += 1
+                    self.dropped_frames_count += 1
                 return
 
             self._decode_and_push(payload)
 
     def _decode_and_push(self, payload):
-        """Gửi gói dữ liệu H.264 vào PyAV để giải mã và đẩy khung hình mới nhất vào display_queue."""
+        """Gửi gói dữ liệu H.264 vào PyAV để giải mã, co giãn bằng swscale và đẩy QImage vào display_queue."""
         if not self.codec:
             return
 
+        t0 = time.perf_counter()
         av_pkt = av.Packet(payload)
         try:
             frames = self.codec.decode(av_pkt)
@@ -200,25 +250,57 @@ class H264Decoder(threading.Thread):
             # Nếu gặp lỗi giải mã (ví dụ dữ liệu mạng bị suy hao), kích hoạt nhảy đến Keyframe tiếp theo
             logger.warning(f"Lỗi khi giải mã frame: {e}. Bỏ qua đến Keyframe sau.")
             self.skipping_to_keyframe = True
+            with self._stats_lock:
+                self.drop_to_keyframe_count += 1
             return
 
         for frame in frames:
-            # Chuyển đổi khung hình sang mảng numpy RGB
-            # Định dạng RGB24 thuận tiện để render lên PySide6 QImage
-            rgb_array = frame.to_ndarray(format="rgb24")
+            tw, th = self.target_width, self.target_height
+            if tw > 0 and th > 0:
+                rf = frame.reformat(width=tw, height=th, format="bgra", interpolation="FAST_BILINEAR")
+            else:
+                rf = frame.reformat(format="bgra")
 
-            # Đẩy vào display_queue
-            # Theo yêu cầu: Chỉ giữ khung hình MỚI NHẤT, bỏ qua khung cũ chưa kịp vẽ
-            while not self.display_queue.empty():
+            b = bytes(rf.planes[0])
+            qimg = QImage(b, rf.width, rf.height, rf.planes[0].line_size, QImage.Format.Format_RGB32).copy()
+
+            t1 = time.perf_counter()
+            with self._stats_lock:
+                self.decoded_frames_count += 1
+                self.total_decode_time += (t1 - t0)
+                self.decode_time_samples += 1
+
+            item = (qimg, frame.width, frame.height)
+
+            if PRESENT_BUFFER_FRAMES <= 0:
+                # Giữ duy nhất khung mới nhất, xả hết khung cũ
+                while not self.display_queue.empty():
+                    try:
+                        self.display_queue.get_nowait()
+                        with self._stats_lock:
+                            self.dropped_frames_count += 1
+                    except queue.Empty:
+                        break
                 try:
-                    self.display_queue.get_nowait()
-                except queue.Empty:
-                    break
-
-            try:
-                self.display_queue.put_nowait(rgb_array)
-            except queue.Full:
-                pass
+                    self.display_queue.put_nowait(item)
+                except queue.Full:
+                    with self._stats_lock:
+                        self.dropped_frames_count += 1
+            else:
+                # PRESENT_BUFFER_FRAMES >= 1: bộ đệm hiển thị theo thứ tự
+                # Nếu hàng đợi đã đầy (vượt quá PRESENT_BUFFER_FRAMES + 1), bỏ khung cũ nhất
+                if self.display_queue.qsize() >= PRESENT_BUFFER_FRAMES + 1:
+                    try:
+                        self.display_queue.get_nowait()
+                        with self._stats_lock:
+                            self.dropped_frames_count += 1
+                    except queue.Empty:
+                        pass
+                try:
+                    self.display_queue.put_nowait(item)
+                except queue.Full:
+                    with self._stats_lock:
+                        self.dropped_frames_count += 1
 
     def stop(self):
         """Dừng decoder luồng an toàn."""

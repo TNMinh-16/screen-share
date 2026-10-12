@@ -16,8 +16,12 @@ object VideoConfig {
     // Bitrate mục tiêu: 8 Mbps (8,000,000 bps) cho 60 FPS mượt mà
     const val BIT_RATE = 8_000_000
 
-    // Chu kỳ khung hình chính (I-frame): 1 giây
-    const val I_FRAME_INTERVAL_SECONDS = 1
+    // Chu kỳ khung hình chính (I-frame): mặc định 2 giây
+    const val I_FRAME_INTERVAL = 2
+    const val I_FRAME_INTERVAL_SECONDS = I_FRAME_INTERVAL
+
+    // Kích thước bộ đệm socket gửi (SO_SNDBUF): 256 KB giúp giảm trễ do bộ đệm quá lớn
+    const val SOCKET_SEND_BUFFER_BYTES = 256 * 1024
 
     // Khoảng thời gian phát lại khung hình cũ khi màn hình đứng yên (100 ms = 100,000 micro-giây)
     const val REPEAT_PREVIOUS_FRAME_INTERVAL_US = 100_000L
