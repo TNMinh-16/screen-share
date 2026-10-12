@@ -50,6 +50,10 @@ class StreamClient(
     @Volatile
     private var lastConfigPacket: ByteArray? = null
 
+    // Gói trạng thái điều khiển chờ gửi nếu hàng đợi video đang đầy
+    @Volatile
+    private var pendingControlStatePacket: ByteArray? = null
+
     // Thống kê cho việc ghi log định kỳ
     val totalBytesSent = AtomicLong(0L)
     val totalFramesSent = AtomicLong(0L)
@@ -167,6 +171,15 @@ class StreamClient(
         try {
             val out = outputStream ?: return
             while (isRunning.get()) {
+                // Ưu tiên gửi gói trạng thái điều khiển mới nhất nếu có
+                val pendingState = pendingControlStatePacket
+                if (pendingState != null) {
+                    pendingControlStatePacket = null
+                    out.write(pendingState)
+                    out.flush()
+                    totalBytesSent.addAndGet(pendingState.size.toLong())
+                }
+
                 val packet = packetQueue.poll(100, TimeUnit.MILLISECONDS) ?: continue
 
                 out.write(packet)
@@ -194,9 +207,11 @@ class StreamClient(
 
         // 0. Gói Trạng thái điều khiển (Loại 3 - CONTROL_STATE):
         if (packetType == com.minh.screenshare.protocol.ControlCommand.TYPE_CONTROL_STATE) {
-            if (!packetQueue.offer(packet)) {
-                packetQueue.poll()
-                packetQueue.offer(packet)
+            pendingControlStatePacket = packet
+            // Thử đưa vào queue nếu còn chỗ trống; nếu đầy thì giữ pendingControlStatePacket để sendLoop gửi trực tiếp,
+            // TUYỆT ĐỐI không poll() làm rơi rớt gói video nào!
+            if (packetQueue.offer(packet)) {
+                pendingControlStatePacket = null
             }
             return
         }

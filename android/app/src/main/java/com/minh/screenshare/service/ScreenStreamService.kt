@@ -69,6 +69,7 @@ class ScreenStreamService : Service() {
     private var displayListener: DisplayManager.DisplayListener? = null
 
     private val isStreaming = AtomicBoolean(false)
+    @Volatile
     private var isControlEnabled = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -99,9 +100,10 @@ class ScreenStreamService : Service() {
                 val data = intent.getParcelableExtra<Intent>(EXTRA_DATA)
                 val host = intent.getStringExtra(EXTRA_HOST) ?: "127.0.0.1"
                 val port = intent.getIntExtra(EXTRA_PORT, VideoConfig.DEFAULT_PORT)
+                val initialControlEnabled = intent.getBooleanExtra(EXTRA_CONTROL_ENABLED, false)
 
                 if (resultCode != 0 && data != null) {
-                    startStreaming(resultCode, data, host, port)
+                    startStreaming(resultCode, data, host, port, initialControlEnabled)
                 } else {
                     // Gọi startForeground() trước khi stopSelf() để tránh crash trên Android 8 đến 11
                     createNotificationChannel()
@@ -136,10 +138,18 @@ class ScreenStreamService : Service() {
     /**
      * Bắt đầu toàn bộ luồng truyền màn hình.
      */
-    private fun startStreaming(resultCode: Int, data: Intent, host: String, port: Int) {
+    private fun startStreaming(
+        resultCode: Int,
+        data: Intent,
+        host: String,
+        port: Int,
+        initialControlEnabled: Boolean = false
+    ) {
         if (isStreaming.get()) return
 
-        Log.i(TAG, "Bắt đầu khởi động phiên truyền màn hình tới $host:$port")
+        Log.i(TAG, "Bắt đầu khởi động phiên truyền màn hình tới $host:$port (Điều khiển: $initialControlEnabled)")
+        isControlEnabled = initialControlEnabled
+        AppState.setControlEnabled(initialControlEnabled)
         AppState.updateState(StreamState.Connecting)
 
         // BƯỚC 1: Tạo NotificationChannel và gọi startForeground() NGAY LẬP TỨC

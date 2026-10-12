@@ -5,6 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import com.minh.screenshare.protocol.ControlCommand
@@ -15,6 +17,7 @@ import com.minh.screenshare.service.RemoteControlAccessibilityService
  * - Tìm ô đang focus qua AccessibilityNodeInfo.findFocus(FOCUS_INPUT).
  * - TEXT: Ưu tiên Clipboard ACTION_PASTE, dự phòng ACTION_SET_TEXT.
  * - KEY: Backspace, Delete, Left, Right, Home, End, Enter, Select All.
+ * - Sau khi paste thành công: tự động xóa nội dung clipboard sau 500 ms để bảo vệ thông tin mật.
  * - TUYỆT ĐỐI không ghi nội dung văn bản vào log (chỉ log độ dài).
  */
 class TextController(private val context: Context) {
@@ -22,6 +25,8 @@ class TextController(private val context: Context) {
     companion object {
         private const val TAG = "ScreenShareControl"
     }
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
      * Chèn chuỗi văn bản vào ô nhập liệu đang focus.
@@ -50,6 +55,20 @@ class TextController(private val context: Context) {
                     clipboard.setPrimaryClip(clip)
                     val pasted = focusNode.performAction(AccessibilityNodeInfo.ACTION_PASTE)
                     if (pasted) {
+                        // Tự động xóa nội dung clipboard sau 500 ms để bảo vệ dữ liệu nhạy cảm
+                        mainHandler.postDelayed({
+                            try {
+                                val clipMgr = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                    clipMgr?.clearPrimaryClip()
+                                } else {
+                                    clipMgr?.setPrimaryClip(ClipData.newPlainText("", ""))
+                                }
+                                Log.d(TAG, "Đã xóa nội dung clipboard tạm sau khi dán.")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Không thể xóa clipboard: ${e.message}")
+                            }
+                        }, 500L)
                         return
                     }
                 } catch (e: Exception) {

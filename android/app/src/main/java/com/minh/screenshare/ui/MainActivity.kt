@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity() {
                 putExtra(ScreenStreamService.EXTRA_DATA, result.data)
                 putExtra(ScreenStreamService.EXTRA_HOST, ip)
                 putExtra(ScreenStreamService.EXTRA_PORT, port)
+                putExtra(ScreenStreamService.EXTRA_CONTROL_ENABLED, binding.switchControl.isChecked)
             }
             ContextCompat.startForegroundService(this, serviceIntent)
         } else {

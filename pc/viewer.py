@@ -471,9 +471,13 @@ class MainWindow(QMainWindow):
 
         if is_enabled and is_acc:
             self.chk_control.setEnabled(True)
-            self.chk_control.setChecked(True)
-            self.video_widget.set_control_enabled(True)
-            self.lbl_control_status.setText("<b style='color:#4CAF50;'>Điều khiển: BẬT</b>")
+            # KHÔNG tự setChecked(True), chỉ kích hoạt ô tick để người dùng chủ động chọn
+            if self.chk_control.isChecked():
+                self.video_widget.set_control_enabled(True)
+                self.lbl_control_status.setText("<b style='color:#4CAF50;'>Điều khiển: BẬT</b>")
+            else:
+                self.video_widget.set_control_enabled(False)
+                self.lbl_control_status.setText("<span style='color:#4CAF50;'>Điện thoại sẵn sàng (Hãy tick chọn để điều khiển)</span>")
         else:
             self.chk_control.setChecked(False)
             self.chk_control.setEnabled(False)

@@ -184,7 +184,9 @@ Hệ thống cho phép bạn tương tác trực tiếp với điện thoại Op
 - **Chuột giữa:** Về màn hình chính (Home).
 - **Thanh công cụ trên PC:** Các nút Back, Home, Recents (Đa nhiệm) và hộp chọn "Bật điều khiển".
 - **Bàn phím máy tính (Gõ chữ & Phím tắt):**
-  - Gõ văn bản tiếng Việt có dấu: Hỗ trợ cả **Unikey** (bộ mã Unicode dựng sẵn) lẫn **bộ gõ Telex mặc định của Windows** (thông qua IME commitString).
+  - Gõ văn bản tiếng Việt có dấu:
+    - **Bộ gõ Telex có sẵn của Windows:** Hoạt động qua cơ chế `IME commitString`, chuỗi văn bản được gửi sang điện thoại khi kết thúc từ (khi người dùng nhấn phím cách, Enter hoặc dấu câu).
+    - **Unikey:** Gửi theo từng ký tự trực tiếp qua sự kiện bàn phím tiêu chuẩn.
   - Phím xóa & điều hướng: Backspace, Delete, Mũi tên Trái / Phải, Home / End (chuyển con trỏ về đầu/cuối dòng).
   - Phím tắt biên tập: `Ctrl + A` (chọn tất cả văn bản trong ô).
   - Phím `Enter`: Chèn ký tự xuống dòng (`\n`).
@@ -194,7 +196,9 @@ Hệ thống cho phép bạn tương tác trực tiếp với điện thoại Op
 - **Điều kiện kép:** Điều khiển chỉ thực sự hoạt động khi:
   1. Người dùng bật công tắc *"Cho phép điều khiển từ máy tính"* trong app Android.
   2. Dịch vụ Trợ năng (*Remote Control Accessibility Service*) đã được kích hoạt trong Cài đặt hệ thống.
-- **Tự động ngắt:** Mỗi khi phiên truyền dừng lại, công tắc điều khiển tự động trở về TẮT.
+  3. Người dùng trên PC chủ động tick chọn *"Bật điều khiển từ máy tính"* trên thanh công cụ (hệ thống không tự ý kích hoạt).
+- **Tự động ngắt & dọn dẹp:** Mỗi khi phiên truyền dừng lại, công tắc điều khiển tự động trở về TẮT.
+- **Bảo mật Clipboard:** Sau khi dán văn bản thành công qua `ACTION_PASTE`, ứng dụng tự động xóa bộ nhớ tạm (Clipboard) sau khoảng 500 ms, đảm bảo văn bản nhạy cảm (như mật khẩu) không bị lưu lại trong Clipboard của điện thoại.
 - **Thông báo rõ ràng:** Khi đang cho phép điều khiển, Notification của app hiển thị: *"Đang cho phép điều khiển từ máy tính"*.
 - **Tuyệt đối an toàn:** Không bao giờ ghi nội dung văn bản người dùng gõ vào file log (chỉ log độ dài ký tự).
 
