@@ -28,6 +28,7 @@ class GestureController(
     companion object {
         private const val TAG = "ScreenShareControl"
         private const val SCROLL_DEBOUNCE_MS = 40L // Gộp các nấc cuộn trong 40ms (30-50ms)
+        private const val SCROLL_SAFETY_TIMEOUT_MS = ControlConfig.SCROLL_DURATION_MS + 500L
     }
 
     private val handlerThread = HandlerThread("GestureControllerThread").apply { start() }
@@ -48,15 +49,32 @@ class GestureController(
 
     // Trạng thái cho Scroll (Gộp các nấc con lăn)
     private var isScrollDispatching = false
+    private var isScrollScheduled = false
     private var accumulatedScrollDx = 0
     private var accumulatedScrollDy = 0
     private var lastScrollNormX = 0
     private var lastScrollNormY = 0
     private val scrollRunnable = Runnable {
         try {
+            isScrollScheduled = false
             dispatchPendingScroll()
         } catch (t: Throwable) {
             Log.w(TAG, "Lỗi khi dispatch pending scroll: ${t.message}", t)
+            isScrollDispatching = false
+            isScrollScheduled = false
+        }
+    }
+    private val scrollSafetyRunnable = Runnable {
+        try {
+            if (isScrollDispatching) {
+                Log.w(TAG, "Hết thời gian chờ cử chỉ cuộn (safety timeout ${SCROLL_SAFETY_TIMEOUT_MS}ms), tự đặt isScrollDispatching = false.")
+                isScrollDispatching = false
+                if (accumulatedScrollDx != 0 || accumulatedScrollDy != 0) {
+                    dispatchPendingScroll()
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Lỗi trong scrollSafetyRunnable: ${t.message}", t)
             isScrollDispatching = false
         }
     }
@@ -183,7 +201,7 @@ class GestureController(
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
         isStrokeDispatching = true
 
-        service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+        val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 handler.post {
                     try {
@@ -216,6 +234,11 @@ class GestureController(
                 }
             }
         }, handler)
+
+        if (!dispatched) {
+            Log.w(TAG, "dispatchGesture cho live drag segment thất bại (service trả về false).")
+            cancelOngoingGesturesInternal()
+        }
     }
 
     private fun onSegmentCompleted(generation: Long) {
@@ -327,12 +350,15 @@ class GestureController(
                     return@post
                 }
 
-                // Gộp các nấc con lăn trong 30-50 ms
-                handler.removeCallbacks(scrollRunnable)
-                handler.postDelayed(scrollRunnable, SCROLL_DEBOUNCE_MS)
+                // Throttle: chỉ postDelayed(scrollRunnable, 40) khi CHƯA có runnable đang chờ
+                if (!isScrollScheduled) {
+                    isScrollScheduled = true
+                    handler.postDelayed(scrollRunnable, SCROLL_DEBOUNCE_MS)
+                }
             } catch (t: Throwable) {
                 Log.w(TAG, "Lỗi trong handleScroll: ${t.message}", t)
                 isScrollDispatching = false
+                isScrollScheduled = false
             }
         }
     }
@@ -362,10 +388,11 @@ class GestureController(
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
         isScrollDispatching = true
-        service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+        val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 handler.post {
                     try {
+                        handler.removeCallbacks(scrollSafetyRunnable)
                         isScrollDispatching = false
                         if (accumulatedScrollDx != 0 || accumulatedScrollDy != 0) {
                             dispatchPendingScroll()
@@ -380,6 +407,7 @@ class GestureController(
             override fun onCancelled(gestureDescription: GestureDescription?) {
                 handler.post {
                     try {
+                        handler.removeCallbacks(scrollSafetyRunnable)
                         isScrollDispatching = false
                         if (accumulatedScrollDx != 0 || accumulatedScrollDy != 0) {
                             dispatchPendingScroll()
@@ -391,6 +419,15 @@ class GestureController(
                 }
             }
         }, handler)
+
+        if (!dispatched) {
+            isScrollDispatching = false
+            handler.removeCallbacks(scrollSafetyRunnable)
+            Log.w(TAG, "dispatchGesture cho scroll thất bại (service trả về false).")
+        } else {
+            handler.removeCallbacks(scrollSafetyRunnable)
+            handler.postDelayed(scrollSafetyRunnable, SCROLL_SAFETY_TIMEOUT_MS)
+        }
     }
 
     fun handlePinch(normX: Int, normY: Int, direction: Byte) {
@@ -485,6 +522,9 @@ class GestureController(
     fun destroy() {
         cancelOngoingGestures()
         handler.removeCallbacks(scrollRunnable)
+        handler.removeCallbacks(scrollSafetyRunnable)
+        isScrollScheduled = false
+        isScrollDispatching = false
         handlerThread.quitSafely()
     }
 }
