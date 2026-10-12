@@ -24,7 +24,8 @@ class StreamClient(
     private val host: String,
     private val port: Int,
     private val onError: (Throwable) -> Unit,
-    private val onRequestSyncFrame: () -> Unit
+    private val onRequestSyncFrame: () -> Unit,
+    private val onControlCommand: (com.minh.screenshare.protocol.ControlCommand) -> Unit = {}
 ) {
     companion object {
         private const val TAG = "ScreenShare"
@@ -39,6 +40,7 @@ class StreamClient(
 
     private val isRunning = AtomicBoolean(false)
     private var senderThread: Thread? = null
+    private var receiverThread: Thread? = null
 
     // Cờ báo hiệu đang đợi Keyframe sau khi bị drop gói do đầy queue
     @Volatile
@@ -77,9 +79,85 @@ class StreamClient(
             start()
         }
 
+        // Khởi động luồng đọc lệnh điều khiển chuyên dụng (hai chiều)
+        receiverThread = Thread({ receiveLoop() }, "StreamReceiverThread").apply {
+            start()
+        }
+
         // Vừa kết nối xong -> yêu cầu MediaCodec gửi ngay Keyframe đầu tiên
         onRequestSyncFrame()
-        Log.i(TAG, "Đã kết nối TCP thành công tới $host:$port (TCP_NODELAY=true)")
+        Log.i(TAG, "Đã kết nối TCP thành công tới $host:$port (TCP_NODELAY=true, Hai chiều)")
+    }
+
+    /**
+     * Gửi gói trạng thái điều khiển (Loại 3: CONTROL_STATE) lên PC.
+     */
+    fun sendControlState(controlEnabled: Boolean, accessibilityConnected: Boolean) {
+        val packet = com.minh.screenshare.protocol.ControlPacketWriter.createControlStatePacket(
+            controlEnabled,
+            accessibilityConnected
+        )
+        enqueuePacket(packet, com.minh.screenshare.protocol.ControlCommand.TYPE_CONTROL_STATE)
+    }
+
+    /**
+     * Vòng lặp nhận dữ liệu điều khiển từ Socket.
+     * Cho phép phát hiện PC ngắt kết nối ngay lập tức (khi read() trả về -1).
+     */
+    private fun receiveLoop() {
+        try {
+            val sock = socket ?: return
+            val input = sock.getInputStream()
+
+            while (isRunning.get()) {
+                // 1. Đọc 4 byte độ dài payload (Big-Endian)
+                val lenBuf = readExact(input, 4) ?: break
+                val payloadLen = java.nio.ByteBuffer.wrap(lenBuf).order(java.nio.ByteOrder.BIG_ENDIAN).int
+
+                if (payloadLen < 0 || payloadLen > com.minh.screenshare.protocol.ControlCommand.MAX_PAYLOAD_SIZE) {
+                    Log.w(TAG, "Độ dài gói điều khiển không hợp lệ ($payloadLen bytes).")
+                    break
+                }
+
+                // 2. Đọc 1 byte loại lệnh
+                val typeBuf = readExact(input, 1) ?: break
+                val cmdType = typeBuf[0]
+
+                // 3. Đọc dữ liệu payload
+                val payload = if (payloadLen > 0) {
+                    readExact(input, payloadLen) ?: break
+                } else {
+                    ByteArray(0)
+                }
+
+                // 4. Parse lệnh và gọi callback
+                val command = com.minh.screenshare.protocol.ControlPacketParser.parseCommand(cmdType, payload)
+                if (command != null) {
+                    onControlCommand(command)
+                }
+            }
+        } catch (e: Exception) {
+            if (isRunning.get()) {
+                Log.i(TAG, "Luồng đọc socket kết thúc: ${e.message}")
+            }
+        } finally {
+            if (isRunning.get()) {
+                Log.w(TAG, "Máy tính đã ngắt kết nối socket (EOF). Dừng phiên truyền.")
+                isRunning.set(false)
+                onError(java.io.EOFException("Máy tính đã ngắt kết nối."))
+            }
+        }
+    }
+
+    private fun readExact(input: java.io.InputStream, size: Int): ByteArray? {
+        val buffer = ByteArray(size)
+        var totalRead = 0
+        while (totalRead < size && isRunning.get()) {
+            val count = input.read(buffer, totalRead, size - totalRead)
+            if (count == -1) return null
+            totalRead += count
+        }
+        return if (totalRead == size) buffer else null
     }
 
     /**
@@ -109,10 +187,19 @@ class StreamClient(
     /**
      * Đẩy một gói tin vào hàng đợi gửi.
      * @param packet Mảng byte gói tin hoàn chỉnh
-     * @param packetType Loại gói tin (0: Config, 1: Keyframe, 2: Delta)
+     * @param packetType Loại gói tin (0: Config, 1: Keyframe, 2: Delta, 3: ControlState)
      */
     fun enqueuePacket(packet: ByteArray, packetType: Byte) {
         if (!isRunning.get()) return
+
+        // 0. Gói Trạng thái điều khiển (Loại 3 - CONTROL_STATE):
+        if (packetType == com.minh.screenshare.protocol.ControlCommand.TYPE_CONTROL_STATE) {
+            if (!packetQueue.offer(packet)) {
+                packetQueue.poll()
+                packetQueue.offer(packet)
+            }
+            return
+        }
 
         // 1. Gói Cấu hình (Loại 0):
         if (packetType == PacketWriter.TYPE_CONFIG) {
@@ -174,6 +261,11 @@ class StreamClient(
         try {
             senderThread?.interrupt()
             senderThread = null
+        } catch (_: Exception) {}
+
+        try {
+            receiverThread?.interrupt()
+            receiverThread = null
         } catch (_: Exception) {}
 
         packetQueue.clear()

@@ -21,8 +21,25 @@ object AppState {
     private val _streamState = MutableLiveData<StreamState>(StreamState.Idle)
     val streamState: LiveData<StreamState> = _streamState
 
+    private val _isControlEnabled = MutableLiveData<Boolean>(false)
+    val isControlEnabled: LiveData<Boolean> = _isControlEnabled
+
+    private val _isAccessibilityConnected = MutableLiveData<Boolean>(false)
+    val isAccessibilityConnected: LiveData<Boolean> = _isAccessibilityConnected
+
     fun updateState(newState: StreamState) {
+        if (newState is StreamState.Idle || newState is StreamState.Error) {
+            _isControlEnabled.postValue(false)
+        }
         // postValue an toàn khi gọi từ luồng nền (background thread)
         _streamState.postValue(newState)
+    }
+
+    fun setControlEnabled(enabled: Boolean) {
+        _isControlEnabled.postValue(enabled)
+    }
+
+    fun setAccessibilityConnected(connected: Boolean) {
+        _isAccessibilityConnected.postValue(connected)
     }
 }

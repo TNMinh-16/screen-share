@@ -13,4 +13,11 @@
     <string name="notification_title">Đang chia sẻ màn hình điện thoại</string>
     <string name="notification_text">Đang truyền trực tiếp lên máy tính Windows</string>
     <string name="notification_action_stop">Dừng</string>
+    <string name="accessibility_service_description">Dịch vụ cho phép nhận thao tác chuột và bàn phím từ máy tính để điều khiển điện thoại từ xa.</string>
+    <string name="switch_control">Cho phép điều khiển từ máy tính</string>
+    <string name="accessibility_status_on">Trợ năng: ĐÃ BẬT</string>
+    <string name="accessibility_status_off">Trợ năng: CHƯA BẬT (Cần bật để điều khiển)</string>
+    <string name="btn_accessibility_settings">Mở cài đặt Trợ năng</string>
+    <string name="accessibility_guide_note">Vào Cài đặt Trợ năng -> tìm \'Screen Share Remote Control\' -> Bật công tắc.</string>
+    <string name="notification_control_active">Đang cho phép điều khiển từ máy tính</string>
 </resources>

@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import com.minh.screenshare.R
 import com.minh.screenshare.config.VideoConfig
 import com.minh.screenshare.databinding.ActivityMainBinding
+import com.minh.screenshare.service.RemoteControlAccessibilityService
 import com.minh.screenshare.service.ScreenStreamService
 import com.minh.screenshare.state.AppState
 import com.minh.screenshare.state.StreamState
@@ -78,6 +79,13 @@ class MainActivity : AppCompatActivity() {
         observeStreamState()
     }
 
+    override fun onResume() {
+        super.onResume()
+        val isConnected = RemoteControlAccessibilityService.isConnected
+        AppState.setAccessibilityConnected(isConnected)
+        updateAccessibilityUI(isConnected)
+    }
+
     private fun loadSavedPreferences() {
         val prefs = getSharedPreferences(VideoConfig.PREFS_NAME, Context.MODE_PRIVATE)
         val savedIp = prefs.getString(VideoConfig.PREF_KEY_IP, "")
@@ -116,6 +124,34 @@ class MainActivity : AppCompatActivity() {
         // Nút mở cài đặt Pin (hỗ trợ riêng cho máy Oppo / ColorOS)
         binding.btnBatterySettings.setOnClickListener {
             openBatterySettings()
+        }
+
+        // Công tắc bật/tắt quyền điều khiển từ máy tính
+        binding.switchControl.setOnCheckedChangeListener { _, isChecked ->
+            val currentState = AppState.streamState.value
+            if (isChecked && !RemoteControlAccessibilityService.isConnected) {
+                Toast.makeText(this, "Vui lòng bật dịch vụ Trợ năng trước khi kích hoạt điều khiển!", Toast.LENGTH_SHORT).show()
+            }
+            if (currentState is StreamState.Streaming || currentState is StreamState.Connecting) {
+                val intent = Intent(this, ScreenStreamService::class.java).apply {
+                    action = ScreenStreamService.ACTION_SET_CONTROL
+                    putExtra(ScreenStreamService.EXTRA_CONTROL_ENABLED, isChecked)
+                }
+                startService(intent)
+            } else {
+                AppState.setControlEnabled(isChecked)
+            }
+        }
+
+        // Nút mở cài đặt Trợ năng hệ thống
+        binding.btnAccessibilitySettings.setOnClickListener {
+            try {
+                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                startActivity(intent)
+                Toast.makeText(this, "Tìm 'Screen Share Remote Control' trong danh sách và Bật lên", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "Không thể mở Cài đặt Trợ năng: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -179,6 +215,31 @@ class MainActivity : AppCompatActivity() {
                     binding.etServerPort.isEnabled = true
                 }
             }
+        }
+
+        // Đồng bộ trạng thái công tắc khi dừng stream hoặc reset từ background
+        AppState.isControlEnabled.observe(this) { isEnabled ->
+            if (binding.switchControl.isChecked != isEnabled) {
+                binding.switchControl.isChecked = isEnabled
+            }
+        }
+
+        // Lắng nghe thay đổi kết nối của dịch vụ Trợ năng
+        AppState.isAccessibilityConnected.observe(this) { isConnected ->
+            updateAccessibilityUI(isConnected)
+        }
+    }
+
+    /**
+     * Cập nhật giao diện TextView trạng thái Trợ năng.
+     */
+    private fun updateAccessibilityUI(isConnected: Boolean) {
+        if (isConnected) {
+            binding.tvAccessibilityStatus.text = getString(R.string.accessibility_status_on)
+            binding.tvAccessibilityStatus.setTextColor(Color.parseColor("#4CAF50")) // Xanh lá
+        } else {
+            binding.tvAccessibilityStatus.text = getString(R.string.accessibility_status_off)
+            binding.tvAccessibilityStatus.setTextColor(Color.parseColor("#FFC107")) // Vàng cảnh báo
         }
     }
 

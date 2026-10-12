@@ -39,6 +39,19 @@
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
+        <!-- Dịch vụ Trợ năng Accessibility tiếp nhận thao tác điều khiển từ xa -->
+        <service
+            android:name=".service.RemoteControlAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
     </application>
 
 </manifest>

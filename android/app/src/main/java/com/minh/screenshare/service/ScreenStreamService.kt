@@ -27,6 +27,10 @@ import com.minh.screenshare.network.StreamClient
 import com.minh.screenshare.state.AppState
 import com.minh.screenshare.state.StreamState
 import com.minh.screenshare.ui.MainActivity
+import com.minh.screenshare.control.GestureController
+import com.minh.screenshare.control.TextController
+import com.minh.screenshare.protocol.ControlCommand
+import com.minh.screenshare.service.RemoteControlAccessibilityService
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -46,21 +50,26 @@ class ScreenStreamService : Service() {
 
         const val ACTION_START = "com.minh.screenshare.ACTION_START"
         const val ACTION_STOP = "com.minh.screenshare.ACTION_STOP"
+        const val ACTION_SET_CONTROL = "com.minh.screenshare.ACTION_SET_CONTROL"
 
         const val EXTRA_RESULT_CODE = "extra_result_code"
         const val EXTRA_DATA = "extra_data"
         const val EXTRA_HOST = "extra_host"
         const val EXTRA_PORT = "extra_port"
+        const val EXTRA_CONTROL_ENABLED = "extra_control_enabled"
     }
 
     private var mediaProjection: MediaProjection? = null
     private var streamClient: StreamClient? = null
     private var screenEncoder: ScreenEncoder? = null
+    private var gestureController: GestureController? = null
+    private var textController: TextController? = null
 
     private var displayManager: DisplayManager? = null
     private var displayListener: DisplayManager.DisplayListener? = null
 
     private val isStreaming = AtomicBoolean(false)
+    private var isControlEnabled = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var currentWidth = 0
@@ -116,6 +125,10 @@ class ScreenStreamService : Service() {
                 stopStreaming()
                 stopSelf()
             }
+            ACTION_SET_CONTROL -> {
+                val enabled = intent.getBooleanExtra(EXTRA_CONTROL_ENABLED, false)
+                setControlEnabledInternal(enabled)
+            }
         }
         return START_NOT_STICKY
     }
@@ -166,6 +179,12 @@ class ScreenStreamService : Service() {
         // Lấy thông số màn hình thực tế
         calculateScreenMetrics()
 
+        // Khởi tạo bộ điều khiển cử chỉ và nhập liệu
+        gestureController = GestureController {
+            getRealScreenMetrics()
+        }
+        textController = TextController(this)
+
         // BƯỚC 4: Kết nối Socket TCP ở luồng nền (timeout 5s) TRƯỚC KHI chạy MediaCodec
         Thread {
             try {
@@ -182,12 +201,45 @@ class ScreenStreamService : Service() {
                     },
                     onRequestSyncFrame = {
                         screenEncoder?.requestSyncFrame()
+                    },
+                    onControlCommand = { cmd ->
+                        if (!isControlEnabled || !RemoteControlAccessibilityService.isConnected) {
+                            return@StreamClient
+                        }
+                        try {
+                            when (cmd) {
+                                is ControlCommand.TouchDown -> gestureController?.handleTouchDown(cmd.x, cmd.y)
+                                is ControlCommand.TouchMove -> gestureController?.handleTouchMove(cmd.x, cmd.y)
+                                is ControlCommand.TouchUp -> gestureController?.handleTouchUp(cmd.x, cmd.y)
+                                is ControlCommand.Scroll -> gestureController?.handleScroll(cmd.x, cmd.y, cmd.dx, cmd.dy)
+                                is ControlCommand.Pinch -> gestureController?.handlePinch(cmd.x, cmd.y, cmd.direction)
+                                is ControlCommand.Nav -> gestureController?.handleNav(cmd.navCode)
+                                is ControlCommand.Text -> textController?.handleText(cmd.text)
+                                is ControlCommand.Key -> textController?.handleKey(cmd.keyCode)
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Lỗi khi xử lý lệnh điều khiển: ${e.message}")
+                        }
                     }
                 )
 
                 // Thực hiện kết nối tới PC
                 client.connect()
                 streamClient = client
+
+                // Gửi trạng thái điều khiển ban đầu cho PC
+                client.sendControlState(isControlEnabled, RemoteControlAccessibilityService.isConnected)
+
+                // Đăng ký lắng nghe thay đổi trạng thái dịch vụ Trợ năng
+                RemoteControlAccessibilityService.onConnectionStateListener = { connected ->
+                    AppState.setAccessibilityConnected(connected)
+                    if (isStreaming.get()) {
+                        streamClient?.sendControlState(isControlEnabled, connected)
+                        if (!connected) {
+                            gestureController?.cancelOngoingGestures()
+                        }
+                    }
+                }
 
                 // BƯỚC 5: Khởi động ScreenEncoder đưa Surface vào VirtualDisplay
                 mainHandler.post {
@@ -347,7 +399,22 @@ class ScreenStreamService : Service() {
             displayListener = null
         }
 
-        // 1. Giải phóng ScreenEncoder & VirtualDisplay
+        // 1. Dọn dẹp bộ điều khiển điều khiển từ xa
+        RemoteControlAccessibilityService.onConnectionStateListener = null
+        try {
+            gestureController?.cancelOngoingGestures()
+            gestureController?.destroy()
+            gestureController = null
+            textController = null
+        } catch (e: Exception) {
+            Log.w(TAG, "Lỗi giải phóng gestureController: ${e.message}")
+        }
+
+        // Tự động tắt công tắc điều khiển khi dừng phiên truyền
+        isControlEnabled = false
+        AppState.setControlEnabled(false)
+
+        // 2. Giải phóng ScreenEncoder & VirtualDisplay
         try {
             screenEncoder?.release()
             screenEncoder = null
@@ -355,7 +422,7 @@ class ScreenStreamService : Service() {
             Log.w(TAG, "Lỗi giải phóng encoder: ${e.message}")
         }
 
-        // 2. Dừng MediaProjection
+        // 3. Dừng MediaProjection
         try {
             mediaProjection?.stop()
             mediaProjection = null
@@ -363,7 +430,7 @@ class ScreenStreamService : Service() {
             Log.w(TAG, "Lỗi dừng mediaProjection: ${e.message}")
         }
 
-        // 3. Đóng Socket Client
+        // 4. Đóng Socket Client
         try {
             streamClient?.disconnect()
             streamClient = null
@@ -371,13 +438,51 @@ class ScreenStreamService : Service() {
             Log.w(TAG, "Lỗi đóng socket: ${e.message}")
         }
 
-        // 4. Dừng Foreground
+        // 5. Dừng Foreground
         stopForeground(STOP_FOREGROUND_REMOVE)
 
         if (AppState.streamState.value !is StreamState.Error) {
             AppState.updateState(StreamState.Idle)
         }
         Log.i(TAG, "Đã dọn dẹp hoàn tất phiên truyền màn hình.")
+    }
+
+    /**
+     * Bật hoặc tắt trạng thái cho phép điều khiển từ máy tính.
+     */
+    private fun setControlEnabledInternal(enabled: Boolean) {
+        isControlEnabled = enabled
+        AppState.setControlEnabled(enabled)
+        Log.i(TAG, "Cập nhật công tắc điều khiển từ xa: $enabled")
+
+        if (isStreaming.get()) {
+            updateNotification()
+            streamClient?.sendControlState(isControlEnabled, RemoteControlAccessibilityService.isConnected)
+            if (!enabled) {
+                gestureController?.cancelOngoingGestures()
+            }
+        }
+    }
+
+    /**
+     * Cập nhật nội dung Notification khi trạng thái điều khiển đổi.
+     */
+    private fun updateNotification() {
+        if (isStreaming.get()) {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.notify(VideoConfig.NOTIFICATION_ID, buildNotification())
+        }
+    }
+
+    /**
+     * Lấy kích thước thực tế của màn hình (real metrics) tại thời điểm nhận lệnh.
+     */
+    private fun getRealScreenMetrics(): Pair<Int, Int> {
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay.getRealMetrics(metrics)
+        return Pair(metrics.widthPixels, metrics.heightPixels)
     }
 
     override fun onDestroy() {
@@ -405,6 +510,7 @@ class ScreenStreamService : Service() {
 
     /**
      * Tạo Notification với nút hành động "Dừng".
+     * Khi đang bật điều khiển: hiển thị "Đang cho phép điều khiển từ máy tính".
      */
     private fun buildNotification(): Notification {
         val openAppIntent = Intent(this, MainActivity::class.java)
@@ -425,9 +531,15 @@ class ScreenStreamService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val contentText = if (isControlEnabled) {
+            getString(R.string.notification_control_active)
+        } else {
+            getString(R.string.notification_text)
+        }
+
         return NotificationCompat.Builder(this, VideoConfig.CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(R.string.notification_text))
+            .setContentText(contentText)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentIntent(pendingOpenApp)
             .addAction(
