@@ -14,22 +14,25 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s][%(levelname)s] %(m
 logger = logging.getLogger("Receiver")
 
 # Định nghĩa các loại gói tin theo giao thức
-PACKET_TYPE_CONFIG = 0    # Gói cấu hình: SPS/PPS kèm chiều rộng và chiều cao (Width, Height)
-PACKET_TYPE_KEYFRAME = 1  # Gói khung hình chính (I-frame / Keyframe)
-PACKET_TYPE_DELTA = 2     # Gói khung hình thường (P-frame)
-PACKET_TYPE_RESYNC = 255  # Gói nội bộ: báo decoder chờ Keyframe tiếp theo (không đi qua mạng)
+PACKET_TYPE_CONFIG = 0         # Gói cấu hình: SPS/PPS kèm chiều rộng và chiều cao (Width, Height)
+PACKET_TYPE_KEYFRAME = 1       # Gói khung hình chính (I-frame / Keyframe)
+PACKET_TYPE_DELTA = 2          # Gói khung hình thường (P-frame)
+PACKET_TYPE_CONTROL_STATE = 3  # Gói trạng thái điều khiển từ điện thoại lên PC (bit0: enabled, bit1: accessibility)
+PACKET_TYPE_RESYNC = 255       # Gói nội bộ: báo decoder chờ Keyframe tiếp theo (không đi qua mạng)
 
 
 class StreamReceiver(threading.Thread):
     def __init__(self, host="0.0.0.0", port=8554, packet_queue=None,
-                 on_client_connected=None, on_client_disconnected=None):
+                 on_client_connected=None, on_client_disconnected=None,
+                 on_control_state_changed=None):
         """
-        Khởi tạo TCP Server nhận luồng video.
+        Khởi tạo TCP Server nhận luồng video và gửi lệnh điều khiển hai chiều.
         :param host: Địa chỉ lắng nghe (0.0.0.0 nhận từ mọi card mạng)
         :param port: Cổng TCP (mặc định 8554)
         :param packet_queue: Hàng đợi queue.Queue để đẩy (packet_type, payload) vào
         :param on_client_connected: Callback khi có điện thoại kết nối (addr)
         :param on_client_disconnected: Callback khi điện thoại ngắt kết nối ()
+        :param on_control_state_changed: Callback khi nhận gói CONTROL_STATE (flags: int)
         """
         super().__init__(daemon=True)
         self.host = host
@@ -37,11 +40,13 @@ class StreamReceiver(threading.Thread):
         self.packet_queue = packet_queue if packet_queue is not None else queue.Queue(maxsize=120)
         self.on_client_connected = on_client_connected
         self.on_client_disconnected = on_client_disconnected
+        self.on_control_state_changed = on_control_state_changed
 
         self.running = False
         self.server_sock = None
         self.client_sock = None
         self.client_addr = None
+        self._send_lock = threading.Lock()
 
     def run(self):
         """Vòng lặp chính của server: lắng nghe và xử lý kết nối."""
@@ -126,6 +131,16 @@ class StreamReceiver(threading.Thread):
             if not payload_data:
                 break
 
+            # Xử lý gói Loại 3 (CONTROL_STATE) từ điện thoại gửi lên
+            if packet_type == PACKET_TYPE_CONTROL_STATE:
+                if len(payload_data) >= 1 and self.on_control_state_changed:
+                    try:
+                        self.on_control_state_changed(payload_data[0])
+                    except Exception as e:
+                        logger.error(f"Lỗi callback CONTROL_STATE: {e}")
+                # Không đẩy gói CONTROL_STATE vào hàng đợi video
+                continue
+
             # Đẩy gói tin vào hàng đợi.
             # Nếu hàng đợi đầy: KHÔNG bỏ lẻ 1 gói (sẽ làm vỡ hình). Xóa hết rồi báo
             # decoder chờ Keyframe tiếp theo (gói RESYNC).
@@ -139,6 +154,22 @@ class StreamReceiver(threading.Thread):
                     pass
                 self.packet_queue.put((PACKET_TYPE_RESYNC, b""))
                 self.packet_queue.put((packet_type, payload_data))
+
+    def send_bytes(self, data: bytes) -> bool:
+        """
+        Gửi dữ liệu nhị phân xuống client đang kết nối (thread-safe).
+        Bỏ qua im lặng và trả về False nếu chưa có client kết nối.
+        """
+        with self._send_lock:
+            sock = self.client_sock
+            if not sock or not self.running:
+                return False
+            try:
+                sock.sendall(data)
+                return True
+            except Exception as e:
+                logger.warning(f"Lỗi khi gửi dữ liệu xuống client: {e}")
+                return False
 
     def _read_exact(self, num_bytes):
         """
@@ -168,6 +199,13 @@ class StreamReceiver(threading.Thread):
                 pass
             self.client_sock = None
             self.client_addr = None
+
+        # Báo trạng thái điều khiển về 0 khi client ngắt kết nối
+        if self.on_control_state_changed:
+            try:
+                self.on_control_state_changed(0)
+            except Exception:
+                pass
 
     def stop(self):
         """Dừng server an toàn."""
